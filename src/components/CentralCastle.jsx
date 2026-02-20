@@ -44,13 +44,12 @@ export default function CentralCastle({ castleState }) {
             >
               <div
                 className="w-full h-full flex items-center justify-center"
-                style={{ maxHeight: 'clamp(62px, 12.5vw, 128px)', maxWidth: '92%', transform: 'translateY(-10%)' }}
+                style={{ maxHeight: '58%', maxWidth: '92%', transform: 'translateY(-8%)' }}
               >
                 <img
                   src={ruinedCastleImg}
                   alt="Kingdom Ruins"
-                  className="w-full h-full object-contain object-center"
-                  style={{ minHeight: 'clamp(56px, 11vw, 112px)' }}
+                  className="w-full h-full object-contain object-center max-h-full max-w-full"
                 />
               </div>
             </motion.div>
@@ -68,34 +67,35 @@ export default function CentralCastle({ castleState }) {
             >
               <div
                 className="w-full h-full flex items-center justify-center"
-                style={{ maxHeight: 'clamp(62px, 12.5vw, 128px)', maxWidth: '92%', transform: 'translateY(-10%)' }}
+                style={{ maxHeight: '58%', maxWidth: '92%', transform: 'translateY(-8%)' }}
               >
                 <img
                   src={restoredCastleImg}
                   alt="Primer Castle"
-                  className="w-full h-full object-contain object-center"
-                  style={{ minHeight: 'clamp(56px, 11vw, 112px)' }}
+                  className="w-full h-full object-contain object-center max-h-full max-w-full"
                 />
               </div>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
-      {/* Text band: centered below image, above bottom border */}
+      {/* Text band: centered between castle and moat, container-relative so it never overlaps */}
       <div
-        className="absolute left-0 right-0 flex items-center justify-center px-2 py-1.5"
+        className="absolute left-0 right-0 flex items-center justify-center px-[5%] py-0"
         style={{
-          minHeight: 'clamp(20px, 4vw, 36px)',
-          bottom: 'clamp(8px, 2.2vw, 22px)',
+          top: '78%',
+          transform: 'translateY(-50%)',
+          minHeight: '18%',
+          maxHeight: '22%',
         }}
       >
         <motion.span
           key={isRepaired ? 'label-repaired' : 'label-ruins'}
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-white font-serif font-bold tracking-tighter uppercase opacity-90 text-center w-full"
+          className="text-white font-serif font-bold tracking-tighter uppercase opacity-90 text-center w-full truncate"
           style={{
-            fontSize: 'clamp(0.5rem, 1.8vw, 1.1rem)',
+            fontSize: 'clamp(0.5rem, 2.5vmin, 1.1rem)',
             lineHeight: 1.1,
             textShadow: '0 1px 2px rgba(0,0,0,0.5)',
           }}

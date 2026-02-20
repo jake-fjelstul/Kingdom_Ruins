@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
+import diceBackground from '../assets/dice_background.png';
 
 const DICE_FACES = { 1: '⚀', 2: '⚁', 3: '⚂', 4: '⚃', 5: '⚄', 6: '⚅' };
 
@@ -47,16 +48,23 @@ export default function RollForFirst() {
   const isTie = lowestRolls.length > 1;
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 overflow-y-auto">
+    <div
+      className="fixed inset-0 flex items-center justify-center z-50 p-4 overflow-y-auto bg-cover bg-center bg-no-repeat relative"
+      style={{
+        backgroundImage: `url(${diceBackground})`,
+        minHeight: '100vh',
+      }}
+    >
+      <div className="absolute inset-0 bg-black/40 pointer-events-none" />
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="bg-slate-800 rounded-2xl shadow-2xl p-6 md:p-8 max-w-lg w-full border border-slate-600"
+        className="relative z-10 rounded-3xl shadow-2xl p-6 md:p-8 max-w-lg w-full border border-slate-500/40 bg-slate-900/60 backdrop-blur-md"
       >
-        <h2 className="text-xl md:text-2xl font-bold text-white text-center mb-2">
+        <h2 className="text-xl md:text-2xl font-bold text-slate-50 text-center mb-2">
           Who Goes First?
         </h2>
-        <p className="text-slate-300 text-center mb-6 text-sm md:text-base">
+        <p className="text-slate-100 text-center mb-6 text-sm md:text-base">
           Each player rolls individually. The{' '}
           <strong className="text-yellow-400">lowest</strong> total goes first.
         </p>

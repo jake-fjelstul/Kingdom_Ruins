@@ -91,7 +91,7 @@ export default function CombatModal() {
             initial={{ scale: 0.8, y: 50 }}
             animate={{ scale: 1, y: 0 }}
             exit={{ scale: 0.8, y: 50 }}
-            className="bg-gradient-to-br from-red-900 to-orange-900 rounded-lg shadow-2xl p-8 max-w-2xl w-full mx-4 border-4 border-red-600"
+            className="bg-gradient-to-br from-red-900 to-orange-900 rounded-lg shadow-2xl p-4 sm:p-6 lg:p-8 max-w-2xl w-full mx-2 sm:mx-4 border-2 sm:border-4 border-red-600 max-h-[95vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {!showResults ? (
@@ -101,12 +101,12 @@ export default function CombatModal() {
                   <motion.h2
                     initial={{ scale: 0 }}
                     animate={{ scale: 1 }}
-                    className="text-4xl font-bold text-white mb-2"
+                    className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white mb-2"
                     style={{ textShadow: '2px 2px 4px rgba(0,0,0,0.5)' }}
                   >
                     {isGauntlet ? '⚔️ THE GAUNTLET OF THE FALLEN ⚔️' : '⚔️ BATTLE ⚔️'}
                   </motion.h2>
-                  <p className="text-red-200 text-lg flex flex-col items-center gap-2">
+                  <p className="text-red-200 text-sm sm:text-base lg:text-lg flex flex-col items-center gap-2">
                     <span>{attacker.name} vs {defender.name}{tactical ? ' (Tactical Clash)' : ''}</span>
                     {bribePot > 0 && (
                       <span className="inline-flex items-center gap-2 bg-yellow-900/60 border border-yellow-500/60 rounded-full px-3 py-1 shadow-md">
@@ -143,7 +143,7 @@ export default function CombatModal() {
                 </div>
 
                 {/* Combat Stats Grid */}
-                <div className="grid grid-cols-2 gap-6 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 mb-4 sm:mb-6">
                   {/* Attacker */}
                   <motion.div
                     initial={{ x: -50, opacity: 0 }}
@@ -155,9 +155,9 @@ export default function CombatModal() {
                     className="bg-red-800/50 rounded-lg p-4 border-2 border-red-600"
                   >
                     <div className="text-center mb-3">
-                      <span className="text-3xl">{attacker.icon}</span>
-                      <h3 className="text-xl font-bold text-white mt-2">{attacker.name}</h3>
-                      <p className="text-red-200 text-sm">{tactical ? 'Challenger (Army+Defense)' : 'Attacker (Army %)'}</p>
+                      <span className="text-2xl sm:text-3xl">{attacker.icon}</span>
+                      <h3 className="text-lg sm:text-xl font-bold text-white mt-2">{attacker.name}</h3>
+                      <p className="text-red-200 text-xs sm:text-sm">{tactical ? 'Challenger (Army+Defense)' : 'Attacker (Army %)'}</p>
                     </div>
                     <div className="space-y-2 text-white">
                       {diceRolled && attackerDice ? (
@@ -284,9 +284,9 @@ export default function CombatModal() {
                     className="bg-blue-800/50 rounded-lg p-4 border-2 border-blue-600"
                   >
                     <div className="text-center mb-3">
-                      <span className="text-3xl">{defender.icon}</span>
-                      <h3 className="text-xl font-bold text-white mt-2">{defender.name}</h3>
-                      <p className="text-blue-200 text-sm">{tactical ? 'Target (Army+Defense)' : 'Defender (Defense %)'}</p>
+                      <span className="text-2xl sm:text-3xl">{defender.icon}</span>
+                      <h3 className="text-lg sm:text-xl font-bold text-white mt-2">{defender.name}</h3>
+                      <p className="text-blue-200 text-xs sm:text-sm">{tactical ? 'Target (Army+Defense)' : 'Defender (Defense %)'}</p>
                     </div>
                     <div className="space-y-2 text-white">
                       {diceRolled && defenderDice ? (

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useReducer, useCallback, useRef, useEffect } from 'react';
 import { rollD6, roll2d6, randomInt } from '../utils/dice';
 import { TILE_IMAGES } from '../assets/tiles';
+import { createRecorder, setDefaultRecorder, EVENTS } from '../analytics';
 
 // Game Constants
 export const FACTIONS = {
@@ -53,7 +54,7 @@ export const OUTER_TERRITORY_DEFS = [
   { name: 'Black Spire', price: 400, bribe: 200, backgroundImage: TILE_IMAGES.black_spire },
 ];
 
-const NEW_TERRITORY_SPACE_INDICES = [6, 12, 18, 24, 30, 36];
+export const NEW_TERRITORY_SPACE_INDICES = [6, 12, 18, 24, 30, 36];
 
 export function getOuterTerritoryDef(spaceIndex) {
   const idx = NEW_TERRITORY_SPACE_INDICES.indexOf(spaceIndex);
@@ -120,6 +121,7 @@ const initialState = {
   gauntlet: null, // { targetId, challengerIds, challengerIndex, phase: 'clash'|'sacrifice_prompt' }
   victorId: null, // winner when gamePhase === 'ended'
   castleState: 'ruins', // 'ruins' | 'repaired' – center castle; repaired when pay to enter Blue Ruin, ruins on Gauntlet loss
+  aiTurnSummaryByPlayerId: {}, // { [playerId]: string } – last turn summary for AI players (shown in treasury)
 };
 
 const PENALTY_SPECIALS = ['banished', 'currency_tanked', 'rebellion', 'secrets_sold', 'bank_debt'];
@@ -207,6 +209,18 @@ function gameReducer(state, action) {
         gauntlet: null,
         victorId: null,
         castleState: 'ruins',
+        aiTurnSummaryByPlayerId: {},
+      };
+    }
+
+    case 'SET_AI_TURN_SUMMARY': {
+      const { playerId, summary } = action.payload;
+      return {
+        ...state,
+        aiTurnSummaryByPlayerId: {
+          ...(state.aiTurnSummaryByPlayerId || {}),
+          [playerId]: summary,
+        },
       };
     }
 
@@ -361,9 +375,11 @@ function gameReducer(state, action) {
       const dir = useReverse ? -1 : 1;
       let stepNextPosition = (stepCurrentPosition + dir + stepTotalSpaces) % stepTotalSpaces;
 
-      // d7: sealed space – cannot land on or pass through; lose this step
+      // d7: sealed space – cannot land on or pass through; lose this step (except START spaces – players must be able to land on START for stay/fast travel)
       const sealed = state.sealedSpaces || {};
-      if ((sealed[stepNextPosition] ?? 0) > 0) return state;
+      const cornerIndices = [0, 11, 21, 32];
+      const isStartSpace = cornerIndices.includes(stepNextPosition);
+      if (!isStartSpace && (sealed[stepNextPosition] ?? 0) > 0) return state;
 
       // Check if player has moved out of range of previously attacked players
       const stepAttackedList = state.attackedPlayers[stepPlayerId] || [];
@@ -534,6 +550,28 @@ function gameReducer(state, action) {
         players: state.players.map(p =>
           p.id === state.players[state.currentPlayerIndex].id
             ? { ...p, lastDrawnCard: drawnCard }
+            : p
+        ),
+      };
+    }
+
+    case 'MERCENARY_DRAW': {
+      const MERCENARY_COST = 300;
+      const { deckType } = action.payload; // 'army' or 'defense'
+      if (deckType !== 'army' && deckType !== 'defense') return state;
+      const cp = state.players[state.currentPlayerIndex];
+      if (!cp || cp.gold < MERCENARY_COST) return state;
+      const deck = state.cardDecks[deckType];
+      if (!deck?.length) return state;
+      const i = Math.floor(Math.random() * deck.length);
+      const drawnCard = deck[i];
+      const newDeck = [...deck.slice(0, i), ...deck.slice(i + 1)];
+      return {
+        ...state,
+        cardDecks: { ...state.cardDecks, [deckType]: newDeck },
+        players: state.players.map(p =>
+          p.id === cp.id
+            ? { ...p, gold: Math.max(0, p.gold - MERCENARY_COST), lastDrawnCard: drawnCard }
             : p
         ),
       };
@@ -1400,11 +1438,11 @@ function gameReducer(state, action) {
       }
 
       let nextCannotBuy = { ...(state.cannotBuyTerritories || {}) };
-      const buyTurns = nextCannotBuy[newCurrentPlayerId];
+      const buyTurns = leavingPlayerId != null ? nextCannotBuy[leavingPlayerId] : undefined;
       if (buyTurns != null) {
         const left = (buyTurns ?? 0) - 1;
-        if (left <= 0) delete nextCannotBuy[newCurrentPlayerId];
-        else nextCannotBuy[newCurrentPlayerId] = left;
+        if (left <= 0) delete nextCannotBuy[leavingPlayerId];
+        else nextCannotBuy[leavingPlayerId] = left;
       }
 
       return {
@@ -1509,6 +1547,34 @@ function gameReducer(state, action) {
         ...state,
         incomeNotification: null,
       };
+
+    case 'COLLECT_START_INCOME': {
+      const { playerId: collectPlayerId } = action.payload;
+      const collectPlayer = state.players.find(p => p.id === collectPlayerId);
+      if (!collectPlayer) return state;
+      const territories = collectPlayer.ownedTerritories ?? [];
+      const innerTerritories = territories.filter(t => t.startsWith('inner-'));
+      const outerTerritories = territories.filter(t => !t.startsWith('inner-'));
+      const outerIncome = outerTerritories.length * 100;
+      const innerIncome = innerTerritories.reduce((sum, tid) => {
+        const territory = state.territories[tid];
+        const tIncomeType = territory?.incomeType;
+        if (!tIncomeType) return sum;
+        const statPercentage = tIncomeType === 'army' ? collectPlayer.armyStrength : collectPlayer.defenseStrength;
+        return sum + (statPercentage * 0.01);
+      }, 0);
+      const income = Math.round(100 + outerIncome + innerIncome);
+      const skipGold = isGoldBlocked(state, collectPlayerId);
+      return {
+        ...state,
+        players: state.players.map(p =>
+          p.id === collectPlayerId ? { ...p, gold: skipGold ? p.gold : p.gold + income } : p
+        ),
+        ...(!skipGold && {
+          incomeNotification: { playerId: collectPlayerId, amount: income, statType: collectPlayer.incomeType },
+        }),
+      };
+    }
 
     case 'PURCHASE_INNER_TERRITORY': {
       const { innerTerritoryId, ownerId: innerOwnerId, cost: innerCost, incomeType } = action.payload;
@@ -1676,21 +1742,74 @@ const GameContext = createContext();
 
 // Provider Component
 export function GameProvider({ children }) {
-  const [state, dispatch] = useReducer(gameReducer, initialState);
+  const [state, dispatchBase] = useReducer(gameReducer, initialState);
   const stateRef = useRef(state);
-  
+  const lastActionRef = useRef(null);
+  const lastStateBeforeRef = useRef(null);
+
+  const recorderRef = useRef(null);
+  if (!recorderRef.current) {
+    recorderRef.current = createRecorder({
+      onFlush: (batch) => {
+        if (typeof window !== 'undefined' && window.__KR_ANALYTICS_FLUSH__) {
+          window.__KR_ANALYTICS_FLUSH__(batch);
+        }
+      },
+      captureActionTrail: true,
+      flushIntervalMs: 60000,
+    });
+    setDefaultRecorder(recorderRef.current);
+  }
+
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    const recorder = recorderRef.current;
+    const before = lastStateBeforeRef.current;
+    const action = lastActionRef.current;
+    if (before == null || !action || !recorder) return;
+    lastStateBeforeRef.current = null;
+    lastActionRef.current = null;
+    recorder.recordAction(action, before, state);
+    if (action.type === 'NEXT_TURN') {
+      recorder.recordTurnEnd(before);
+      recorder.recordTurnStart(state);
+    }
+    if (state.gamePhase === 'ended' && before.gamePhase !== 'ended') {
+      recorder.recordGameEnd(state, state.victorId ? 'gauntlet' : 'concession');
+    }
+    if (action.type === 'SET_FIRST_PLAYER') {
+      const first = state.players[state.currentPlayerIndex];
+      recorder.emit(EVENTS.FIRST_PLAYER_SET, {
+        firstPlayerId: first?.id,
+        firstPlayerIndex: state.currentPlayerIndex,
+      });
+    }
+    if (action.type === 'INITIALIZE_GAME') {
+      recorder.startSession();
+      const pl = action.payload?.players ?? state.players ?? [];
+      recorder.emit(EVENTS.GAME_INIT, {
+        playerCount: pl.length,
+        factionOrder: pl.map((p) => p.faction),
+        testingMode: action.payload?.testingMode ?? false,
+      });
+    }
+  }, [state]);
+
+  const dispatch = useCallback((action) => {
+    lastActionRef.current = action;
+    lastStateBeforeRef.current = stateRef.current;
+    dispatchBase(action);
+  }, []);
 
   const initializeGame = useCallback((playerCount, selectedFactions = null, options = {}) => {
     // Default faction order: King (top-left), Dragon (top-right), Knight (bottom-left), Wizard (bottom-right)
     const defaultFactionOrder = ['KING', 'DRAGON', 'KNIGHT', 'WIZARD'];
     const factionOrder = selectedFactions || defaultFactionOrder.slice(0, playerCount);
     
-    // Map factions to their corner positions
-    // Corner positions: 0 (top-left), 11 (top-right), 32 (bottom-left), 21 (bottom-right)
-    // Note: Bottom row indices are reversed - index 32 is leftmost, index 21 is rightmost
+    // Map factions to their corner positions (must match GameBoard getPosition)
     const factionToCorner = {
       'KING': 0,    // top-left
       'DRAGON': 11, // top-right
@@ -1717,12 +1836,13 @@ export function GameProvider({ children }) {
         hand: [], // Kept fate/penalty cards: { id, type, text, effect, keepable }
         lastDrawnCard: null,
         incomeType: null, // 'army' or 'defense' - chosen when first inner territory is purchased
+        isAI: !!(options?.aiPlayers && options.aiPlayers[i]),
       };
     });
 
     // Create board spaces (41 spaces total for a perimeter track)
     // Board is 12 spaces wide, 10 spaces tall
-    // Corners: 0 (top-left), 11 (top-right), 32 (bottom-right), 21 (bottom-left)
+    // Corners: 0 (top-left), 11 (top-right), 21 (bottom-right), 32 (bottom-left)
     const boardSpaces = [];
     const spaceTypes = [
       SPACE_TYPES.RESOURCE_CARD,
@@ -1931,30 +2051,17 @@ export function GameProvider({ children }) {
                 const space = updatedState.boardSpaces[finalPlayer.position];
                 const cornerIndices = [0, 11, 21, 32];
                 const startToFaction = { 0: 'king', 11: 'dragon', 32: 'knight', 21: 'wizard' };
-                // Approach spaces (forward): 20->21, 10->11, 31->32, 40->0. Reverse: 22->21, 1->0, 33->32, 12->11.
-                const approachToCorner = { 20: 21, 10: 11, 31: 32, 40: 0, 22: 21, 1: 0, 33: 32, 12: 11 };
 
                 let runStartLogic = false;
                 let startSpaceIndex = finalPlayer.position;
                 let startOwnerId = null;
 
-                if (cornerIndices.includes(finalPlayer.position)) {
-                  // Always treat corners as START; never draw a card here
+                if (cornerIndices.includes(finalPlayer.position) || (space && space.type === SPACE_TYPES.START)) {
                   runStartLogic = true;
                   startSpaceIndex = finalPlayer.position;
                   const faction = startToFaction[finalPlayer.position];
                   const owner = updatedState.players.find(p => p.faction === faction);
                   startOwnerId = owner?.id ?? null;
-                } else if (approachToCorner[finalPlayer.position] != null) {
-                  const cornerIndex = approachToCorner[finalPlayer.position];
-                  const faction = startToFaction[cornerIndex];
-                  const owner = updatedState.players.find(p => p.faction === faction);
-                  if (!owner) {
-                    // Adjacent corner is a non-player start: offer stay/fast travel instead of card
-                    runStartLogic = true;
-                    startSpaceIndex = cornerIndex;
-                    startOwnerId = null;
-                  }
                 }
 
                 if (runStartLogic) {
@@ -2246,6 +2353,14 @@ export function GameProvider({ children }) {
     const st = stateRef.current;
     const land = st.landedOnStart;
     if (!land) return;
+    const mover = st.players.find(p => p.id === land.moverId);
+    if (!mover) return;
+    const targetPos = Number(targetSpaceIndex);
+    const playerStartIndex = Number(FACTION_TO_START_INDEX[mover.faction] ?? 0);
+    const choseOwnStart = targetPos === playerStartIndex;
+    if (choseOwnStart) {
+      dispatch({ type: 'COLLECT_START_INCOME', payload: { playerId: land.moverId } });
+    }
     dispatch({ type: 'MOVE_PLAYER_TO_POSITION', payload: { playerId: land.moverId, position: targetSpaceIndex } });
     dispatch({ type: 'CLEAR_LANDED_ON_START' });
     setTimeout(() => checkAndAdvanceTurn(), 100);
@@ -2319,6 +2434,15 @@ export function GameProvider({ children }) {
       dispatch({ type: 'GAUNTLET_VICTORY' });
     }
     // Combat starts after entry animation (gauntletEntryAnimationComplete)
+  }, []);
+
+  const mercenaryDraw = useCallback((deckType) => {
+    const st = stateRef.current;
+    const player = st.players[st.currentPlayerIndex];
+    if (!player || player.gold < 300 || (deckType !== 'army' && deckType !== 'defense')) return;
+    const deck = st.cardDecks[deckType];
+    if (!deck?.length) return;
+    dispatch({ type: 'MERCENARY_DRAW', payload: { deckType } });
   }, []);
 
   const gauntletEntryAnimationComplete = useCallback(() => {
@@ -2416,10 +2540,13 @@ export function GameProvider({ children }) {
     resolveCombat,
     endCombat,
     requestEnterBlueRuin,
+    mercenaryDraw,
     gauntletEntryAnimationComplete,
     handleGauntletClose,
     gauntletSacrifice,
     gauntletDeclineSacrifice,
+    getAnalyticsRecorder: () => recorderRef.current,
+    hasAttackablePlayers,
   };
 
   return <GameContext.Provider value={value}>{children}</GameContext.Provider>;

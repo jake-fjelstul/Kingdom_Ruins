@@ -4,10 +4,21 @@ import { useGame, canEnterBlueRuinZone } from '../context/GameContext';
 
 export default function Dice() {
   const game = useGame();
-  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, requestEnterBlueRuin, combatActive, cardDecks = {} } = game;
+  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, requestEnterBlueRuin, combatActive, cardDecks = {}, boardSpaces = [], attackedPlayers = {}, attackImmunity = {}, hasAttackablePlayers } = game;
   const currentPlayer = players[currentPlayerIndex];
   const cannotMove = !!(currentPlayer && (cannotMoveNextTurn || {})[currentPlayer.id]);
-  const hasPendingAction = selectedTerritory !== null || currentPlayer?.lastDrawnCard !== null;
+
+  // Things that must be completed before the turn can proceed (doubles bonus is NOT blocking – it's the option you get after completing these)
+  const hasBlockingAction =
+    selectedTerritory !== null ||
+    currentPlayer?.lastDrawnCard !== null ||
+    selectedCorner !== null ||
+    pendingIncomeTypeSelection !== null ||
+    landedOnStart !== null ||
+    landedOnStartChoice !== null ||
+    combatActive ||
+    (currentPlayer && hasAttackablePlayers?.(currentPlayer, players, boardSpaces, attackedPlayers, combatActive, attackImmunity));
+
   const canEnter = gamePhase === 'playing' && !combatActive && currentPlayer && canEnterBlueRuinZone(currentPlayer, game);
   const [testDie1, setTestDie1] = useState(1);
   const [testDie2, setTestDie2] = useState(1);
@@ -30,7 +41,7 @@ export default function Dice() {
   const canRollAgain = doublesExtraRollAvailable && !doublesBonusUsed;
 
   const handleRoll = () => {
-    if (isRolling || diceRoll !== null || cannotMove) return;
+    if (isRolling || diceRoll !== null || cannotMove || hasBlockingAction) return;
     rollDice();
   };
 
@@ -81,7 +92,7 @@ export default function Dice() {
 
   return (
     <div className="flex flex-col items-center gap-4">
-      {canEnter && diceRoll === null && !hasPendingAction && (
+      {canEnter && diceRoll === null && !hasBlockingAction && (
         <motion.button
           onClick={requestEnterBlueRuin}
           className="px-6 py-3 rounded-lg font-bold text-white shadow-lg bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 border-2 border-amber-400"
@@ -106,14 +117,14 @@ export default function Dice() {
       ) : (
         <motion.button
           onClick={handleRoll}
-          disabled={isRolling || diceRoll !== null}
-          className={`px-6 py-3 rounded-lg font-bold text-white shadow-lg ${
-            isRolling || diceRoll !== null
+          disabled={isRolling || diceRoll !== null || hasBlockingAction}
+          className={`px-4 sm:px-6 py-2 sm:py-3 rounded-lg font-bold text-sm sm:text-base text-white shadow-lg transition-all ${
+            isRolling || diceRoll !== null || hasBlockingAction
               ? 'bg-gray-500 cursor-not-allowed'
               : 'bg-blue-600 hover:bg-blue-700'
           }`}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
+          whileHover={!(isRolling || diceRoll !== null || hasBlockingAction) ? { scale: 1.05 } : undefined}
+          whileTap={!(isRolling || diceRoll !== null || hasBlockingAction) ? { scale: 0.95 } : undefined}
         >
           {isRolling ? 'Rolling...' : diceRoll !== null ? 'Move Complete' : 'Roll Dice'}
         </motion.button>
@@ -128,15 +139,15 @@ export default function Dice() {
             exit={{ scale: 0, rotate: 180 }}
             className="flex flex-col items-center gap-2"
           >
-            <div className="flex items-center gap-4">
-              <div className="text-6xl">
+            <div className="flex items-center gap-2 sm:gap-4">
+              <div className="text-4xl sm:text-5xl lg:text-6xl">
                 {getDiceFace(diceRoll[0])}
               </div>
-              <div className="text-4xl text-white font-bold">+</div>
-              <div className="text-6xl">
+              <div className="text-2xl sm:text-3xl lg:text-4xl text-white font-bold">+</div>
+              <div className="text-4xl sm:text-5xl lg:text-6xl">
                 {getDiceFace(diceRoll[1])}
               </div>
-              <div className="text-2xl text-white font-bold ml-2">
+              <div className="text-xl sm:text-2xl text-white font-bold ml-1 sm:ml-2">
                 = {diceRoll[0] + diceRoll[1]}
               </div>
             </div>
@@ -144,7 +155,7 @@ export default function Dice() {
               <motion.div
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="text-yellow-300 font-bold text-lg"
+                className="text-yellow-300 font-bold text-base sm:text-lg"
               >
                 🎲 Doubles! 🎲
               </motion.div>
@@ -159,15 +170,15 @@ export default function Dice() {
             <motion.div
               animate={{ rotate: 360 }}
               transition={{ duration: 0.5, repeat: Infinity, ease: 'linear' }}
-              className="text-6xl"
+              className="text-4xl sm:text-5xl lg:text-6xl"
             >
               ⚀
             </motion.div>
-            <div className="text-4xl text-white font-bold">+</div>
+            <div className="text-2xl sm:text-3xl lg:text-4xl text-white font-bold">+</div>
             <motion.div
               animate={{ rotate: -360 }}
               transition={{ duration: 0.5, repeat: Infinity, ease: 'linear' }}
-              className="text-6xl"
+              className="text-4xl sm:text-5xl lg:text-6xl"
             >
               ⚀
             </motion.div>
@@ -175,7 +186,7 @@ export default function Dice() {
         )}
       </AnimatePresence>
 
-      {!cannotMove && canRollAgain && diceRoll === null && !hasPendingAction && (
+      {!cannotMove && canRollAgain && diceRoll === null && !hasBlockingAction && (
         <div className="flex flex-col items-center gap-2 mt-2">
           <div className="text-yellow-300 text-sm font-semibold text-center">
             🎲 You rolled doubles! Roll again! 🎲
@@ -190,12 +201,12 @@ export default function Dice() {
           </motion.button>
         </div>
       )}
-      {!cannotMove && canRollAgain && (diceRoll !== null || hasPendingAction) && (
+      {!cannotMove && canRollAgain && (diceRoll !== null || hasBlockingAction) && (
         <div className="text-yellow-300 text-xs text-center mt-2">
           🎲 Doubles bonus: Complete your action to roll again
         </div>
       )}
-      {!cannotMove && diceRoll !== null && !isRolling && !hasPendingAction && !canRollAgain && (
+      {!cannotMove && diceRoll !== null && !isRolling && !hasBlockingAction && !canRollAgain && (
         <motion.button
           onClick={endTurn}
           className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold"
@@ -205,7 +216,7 @@ export default function Dice() {
           End Turn
         </motion.button>
       )}
-      {hasPendingAction && (
+      {hasBlockingAction && (
         <div className="text-white text-sm text-center">
           Complete action to continue
         </div>
@@ -234,9 +245,9 @@ export default function Dice() {
           />
           <button
             onClick={() => setTestDice(testDie1, testDie2)}
-            disabled={isRolling || diceRoll !== null || cannotMove}
+            disabled={isRolling || diceRoll !== null || cannotMove || hasBlockingAction}
             className={`px-3 py-1 rounded text-sm font-semibold ${
-              isRolling || diceRoll !== null || cannotMove
+              isRolling || diceRoll !== null || cannotMove || hasBlockingAction
                 ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
                 : 'bg-purple-600 hover:bg-purple-700 text-white'
             }`}

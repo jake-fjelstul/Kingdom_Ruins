@@ -1,6 +1,19 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
+import resourceCardBg from '../assets/cards/resource.png';
+import armyCardBg from '../assets/cards/army.png';
+import defenseCardBg from '../assets/cards/defense.png';
+import fateCardBg from '../assets/cards/fate.png';
+import penaltyCardBg from '../assets/cards/penalty.png';
+
+const CARD_TYPE_BG = {
+  resource: resourceCardBg,
+  army: armyCardBg,
+  defense: defenseCardBg,
+  fate: fateCardBg,
+  penalty: penaltyCardBg,
+};
 
 export default function CardModal() {
   const { players, currentPlayerIndex, applyCardEffect, applyResourceSpecial, applyArmySpecial, applyDefenseSpecial, applyFateSpecial, keepDrawnCard, boardSpaces = [] } = useGame();
@@ -30,7 +43,9 @@ export default function CardModal() {
   }) : [];
 
   const handleApply = () => {
-    if (effect.special === 'gold_per_territory' || (effect.gold != null || effect.army != null || effect.defense != null)) {
+    const hasNumericEffect = effect.gold != null || effect.army != null || effect.defense != null;
+    const isPenaltySpecial = card.type === 'penalty' && effect.special;
+    if (effect.special === 'gold_per_territory' || hasNumericEffect || isPenaltySpecial) {
       applyCardEffect(currentPlayer.id, effect, { isPenalty: card.type === 'penalty' });
     }
   };
@@ -95,6 +110,15 @@ export default function CardModal() {
     return colors[type] || 'bg-gray-300';
   };
 
+  const cardBgImage = CARD_TYPE_BG[card.type];
+  const modalContentStyle = cardBgImage
+    ? {
+        backgroundImage: `linear-gradient(to bottom, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.1) 50%), url(${cardBgImage})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }
+    : undefined;
+
   return (
     <AnimatePresence>
       <motion.div
@@ -108,16 +132,18 @@ export default function CardModal() {
           initial={{ scale: 0, rotate: -180 }}
           animate={{ scale: 1, rotate: 0 }}
           exit={{ scale: 0, rotate: 180 }}
-          className={`${getCardColor(card.type)} rounded-lg p-6 shadow-2xl max-w-md border-4 border-gray-800`}
+          className={`${!cardBgImage ? getCardColor(card.type) : ''} rounded-lg p-4 sm:p-6 shadow-2xl max-w-md w-full mx-4 border-2 sm:border-4 border-gray-800 overflow-hidden`}
+          style={modalContentStyle}
           onClick={(e) => e.stopPropagation()}
         >
-          <h3 className="text-2xl font-bold text-gray-800 mb-4 text-center">Card Drawn</h3>
-          <p className="text-gray-800 text-lg mb-4 text-center">{card.text}</p>
+          <div className="rounded-xl px-4 sm:px-5 py-4 sm:py-5" style={{ backgroundColor: 'rgba(255, 255, 255, 0.55)' }}>
+            <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2 text-center">Card Drawn</h3>
+            <p className="text-gray-900 text-base sm:text-lg mb-4 text-center">{card.text}</p>
 
-          {effect && (effect.special || effect.gold != null || effect.army != null || effect.defense != null) && (
-            <div className="bg-white rounded p-3 mb-4">
-              <div className="text-sm font-semibold text-gray-700 mb-2">Effect:</div>
-              <div className="text-sm text-gray-600">
+            {effect && (effect.special || effect.gold != null || effect.army != null || effect.defense != null) && (
+              <div className="p-3 mb-4 rounded-lg bg-white/60">
+                <div className="text-sm font-semibold text-gray-900 mb-2">Effect:</div>
+                <div className="text-sm text-gray-800">
                 {effect.special === 'gold_per_territory' && (
                   <div>Gain 50 Gold per territory you own.</div>
                 )}
@@ -197,13 +223,13 @@ export default function CardModal() {
                     {effect.defense != null && <div>Defense: {effect.defense >= 0 ? '+' : ''}{effect.defense}%</div>}
                   </>
                 )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {isR8 ? (
+            {isR8 ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-700 text-center font-medium">Choose a player to form a connection with:</p>
+              <p className="text-sm text-gray-900 text-center font-medium">Choose a player to form a connection with:</p>
               <div className="flex flex-wrap gap-2 justify-center">
                 {players
                   .filter((p) => p.id !== currentPlayer.id)
@@ -218,9 +244,9 @@ export default function CardModal() {
                   ))}
               </div>
             </div>
-          ) : isA7 ? (
+            ) : isA7 ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-700 text-center font-medium">Choose a commander within {withinSpaces} spaces:</p>
+              <p className="text-sm text-gray-900 text-center font-medium">Choose a commander within {withinSpaces} spaces:</p>
               {a7Targets.length === 0 ? (
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-amber-700 text-center">No players within {withinSpaces} spaces.</p>
@@ -248,9 +274,9 @@ export default function CardModal() {
                 </div>
               )}
             </div>
-          ) : isA0 ? (
+            ) : isA0 ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-700 text-center font-medium">Spend 100 Gold. Choose an opponent:</p>
+              <p className="text-sm text-gray-900 text-center font-medium">Spend 100 Gold. Choose an opponent:</p>
               {currentPlayer.gold < 100 ? (
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-amber-700 text-center">You need 100 Gold.</p>
@@ -277,9 +303,9 @@ export default function CardModal() {
                 </div>
               )}
             </div>
-          ) : isF6 ? (
+            ) : isF6 ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-700 text-center font-medium">Choose a player to swap positions with:</p>
+              <p className="text-sm text-gray-900 text-center font-medium">Choose a player to swap positions with:</p>
               <div className="flex flex-wrap gap-2 justify-center">
                 {players
                   .filter((p) => p.id !== currentPlayer.id)
@@ -294,9 +320,9 @@ export default function CardModal() {
                   ))}
               </div>
             </div>
-          ) : isF7 ? (
+            ) : isF7 ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-700 text-center font-medium">Choose a player to ally with:</p>
+              <p className="text-sm text-gray-900 text-center font-medium">Choose a player to ally with:</p>
               <div className="flex flex-wrap gap-2 justify-center">
                 {players
                   .filter((p) => p.id !== currentPlayer.id)
@@ -311,9 +337,9 @@ export default function CardModal() {
                   ))}
               </div>
             </div>
-          ) : isKeepable ? (
+            ) : isKeepable ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-700 text-center">
+              <p className="text-sm text-gray-900 text-center">
                 Keep this card to use later on your turn, or sell it for 100g.
               </p>
               <div className="flex gap-2">
@@ -361,14 +387,15 @@ export default function CardModal() {
             >
               Apply Effect
             </button>
-          ) : (
+            ) : (
             <button
               onClick={handleApply}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg"
             >
               Apply Effect
             </button>
-          )}
+            )}
+          </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>

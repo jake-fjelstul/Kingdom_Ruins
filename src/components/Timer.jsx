@@ -31,13 +31,13 @@ export default function Timer() {
   const currentPlayer = players[currentPlayerIndex];
 
   return (
-    <div className="flex items-center justify-center gap-4 mb-4">
-      <div className="bg-slate-800/90 backdrop-blur rounded-xl px-6 py-3 shadow-xl border border-slate-700">
-        <div className="flex items-center gap-3">
-          <span className="text-white text-sm font-semibold">Turn Timer:</span>
-          <span className="text-white text-2xl font-mono font-bold">{formatTime(seconds)}</span>
+    <div className="flex items-center justify-center gap-2 sm:gap-4 mb-2 sm:mb-4 px-2">
+      <div className="bg-slate-800/90 backdrop-blur rounded-lg sm:rounded-xl px-3 sm:px-6 py-2 sm:py-3 shadow-xl border border-slate-700 w-full max-w-md">
+        <div className="flex flex-col sm:flex-row items-center justify-evenly gap-2 sm:gap-4">
+          <span className="text-white text-xs sm:text-sm font-semibold">Turn Timer:</span>
+          <span className="text-white text-xl sm:text-2xl font-mono font-bold">{formatTime(seconds)}</span>
           {currentPlayer && (
-            <span className="text-white text-lg ml-2">
+            <span className="text-white text-sm sm:text-lg">
               {currentPlayer.icon} {currentPlayer.name}'s Turn
             </span>
           )}

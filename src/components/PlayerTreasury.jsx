@@ -35,6 +35,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
     penaltyImmunity = {},
     alliances = {},
     reverseUntilBattleWin = {},
+    aiTurnSummaryByPlayerId = {},
   } = useGame();
   const currentPlayer = players[currentPlayerIndex];
   const isActuallyCurrent = currentPlayer?.id === player.id;
@@ -82,12 +83,13 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
   const gapSize = 24; // ~1.5rem in pixels
   const totalGaps = (playerCount - 1) * gapSize;
   const availableHeight = (boardHeight - totalGaps) / playerCount;
-  const paddingValue = Math.max(8, Math.min(availableHeight * 0.05, 16)); // 0.5rem to 1rem in pixels
-  const iconSize = `clamp(1.5rem, ${availableHeight * 0.15}px, 3rem)`;
-  const titleSize = `clamp(0.875rem, ${availableHeight * 0.08}px, 1.125rem)`;
-  const statPadding = `clamp(0.25rem, ${availableHeight * 0.03}px, 0.5rem)`;
-  const statTextSize = `clamp(0.75rem, ${availableHeight * 0.06}px, 0.875rem)`;
-  const spacing = `clamp(0.25rem, ${availableHeight * 0.02}px, 0.5rem)`;
+  // Mobile-friendly padding and sizing
+  const paddingValue = Math.max(6, Math.min(availableHeight * 0.05, 16)); // Responsive padding
+  const iconSize = `clamp(1.25rem, ${availableHeight * 0.15}px, 3rem)`;
+  const titleSize = `clamp(0.75rem, ${availableHeight * 0.08}px, 1.125rem)`;
+  const statPadding = `clamp(0.2rem, ${availableHeight * 0.03}px, 0.5rem)`;
+  const statTextSize = `clamp(0.65rem, ${availableHeight * 0.06}px, 0.875rem)`;
+  const spacing = `clamp(0.2rem, ${availableHeight * 0.02}px, 0.5rem)`;
 
   const getTerritoryDisplayInfo = (territoryId) => {
     const isInner = territoryId.startsWith('inner-');
@@ -150,6 +152,16 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
             )}
           </div>
         </div>
+
+        {/* AI turn summary */}
+        {player.isAI && aiTurnSummaryByPlayerId[player.id] && (
+          <div className="flex-shrink-0 rounded bg-slate-700/80 border border-slate-600 p-2">
+            <div className="text-slate-300 font-semibold" style={{ fontSize: `clamp(0.55rem, ${availableHeight * 0.045}px, 0.7rem)`, marginBottom: 4 }}>Last turn</div>
+            <p className="text-slate-200 text-xs leading-snug" style={{ fontSize: `clamp(0.5rem, ${availableHeight * 0.04}px, 0.65rem)` }}>
+              {aiTurnSummaryByPlayerId[player.id]}
+            </p>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="flex flex-col gap-1 flex-shrink-0" style={{ gap: spacing }}>
