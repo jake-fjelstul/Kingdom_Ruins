@@ -4,7 +4,7 @@ import { useGame, canEnterBlueRuinZone } from '../context/GameContext';
 
 export default function Dice() {
   const game = useGame();
-  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, requestEnterBlueRuin, combatActive, cardDecks = {}, boardSpaces = [], attackedPlayers = {}, attackImmunity = {}, hasAttackablePlayers } = game;
+  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, requestEnterBlueRuin, combatActive, cardDecks = {}, boardSpaces = [], attackedPlayers = {}, attackImmunity = {}, hasAttackablePlayers, territories = {}, testPurchaseInnerTerritory } = game;
   const currentPlayer = players[currentPlayerIndex];
   const cannotMove = !!(currentPlayer && (cannotMoveNextTurn || {})[currentPlayer.id]);
 
@@ -300,6 +300,53 @@ export default function Dice() {
               >
                 Set Stats
               </button>
+            </div>
+          </div>
+        )}
+        {/* Testing Feature - Buy Player Territory Sections (inner sections only; no gold required; no turn advance) */}
+        {currentPlayer && testPurchaseInnerTerritory && (
+          <div className="border-t border-gray-600 pt-3 mt-3">
+            <p className="text-xs text-gray-400 mb-2 text-center">Buy {currentPlayer.name} Territory Sections</p>
+            <div className="space-y-2">
+              {(() => {
+                const factionToPrefix = { king: 'tl', dragon: 'tr', knight: 'bl', wizard: 'br' };
+                const prefix = factionToPrefix[currentPlayer.faction];
+                if (!prefix) return null;
+                const innerIds = [
+                  { id: `inner-${prefix}-1`, label: 'Section 1' },
+                  { id: `inner-${prefix}-2`, label: 'Section 2' },
+                ];
+                return innerIds.map(({ id, label }) => {
+                  const owned = territories[id];
+                  if (owned) {
+                    return (
+                      <div key={id} className="flex items-center justify-between text-xs text-gray-500 py-1">
+                        <span>{label} ({id})</span>
+                        <span className="text-green-400">Owned</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={id} className="flex flex-wrap items-center gap-1 py-1">
+                      <span className="text-gray-300 text-xs w-24">{label} ({id}):</span>
+                      <button
+                        type="button"
+                        onClick={() => testPurchaseInnerTerritory(id, 'army')}
+                        className="px-2 py-0.5 rounded text-xs font-medium bg-green-600 hover:bg-green-700 text-white"
+                      >
+                        Army
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => testPurchaseInnerTerritory(id, 'defense')}
+                        className="px-2 py-0.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white"
+                      >
+                        Defense
+                      </button>
+                    </div>
+                  );
+                });
+              })()}
             </div>
           </div>
         )}

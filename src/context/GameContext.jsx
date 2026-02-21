@@ -1601,6 +1601,25 @@ function gameReducer(state, action) {
       };
     }
 
+    case 'TEST_PURCHASE_INNER_TERRITORY': {
+      if (!state.testingMode) return state;
+      const { innerTerritoryId, ownerId: innerOwnerId, incomeType } = action.payload;
+      const innerOwner = state.players.find(p => p.id === innerOwnerId);
+      if (!innerOwner || state.territories[innerTerritoryId]) return state;
+      return {
+        ...state,
+        territories: {
+          ...state.territories,
+          [innerTerritoryId]: { ownerId: innerOwnerId, purchased: true, incomeType },
+        },
+        players: state.players.map(p =>
+          p.id === innerOwnerId
+            ? { ...p, ownedTerritories: [...p.ownedTerritories, innerTerritoryId] }
+            : p
+        ),
+      };
+    }
+
     case 'END_GAME':
       return {
         ...state,
@@ -2404,6 +2423,18 @@ export function GameProvider({ children }) {
     setTimeout(() => checkAndAdvanceTurn(), 100);
   }, [checkAndAdvanceTurn]);
 
+  const testPurchaseInnerTerritory = useCallback((territoryId, incomeType) => {
+    const currentState = stateRef.current;
+    if (!currentState.testingMode) return;
+    const currentPlayer = currentState.players[currentState.currentPlayerIndex];
+    if (!currentPlayer) return;
+    if (currentState.territories[territoryId]) return;
+    dispatch({
+      type: 'TEST_PURCHASE_INNER_TERRITORY',
+      payload: { innerTerritoryId: territoryId, ownerId: currentPlayer.id, incomeType },
+    });
+  }, []);
+
   const clearIncomeNotification = useCallback(() => {
     dispatch({ type: 'CLEAR_INCOME_NOTIFICATION' });
   }, []);
@@ -2520,6 +2551,7 @@ export function GameProvider({ children }) {
     sellCard,
     purchaseTerritory,
     purchaseTerritoryWithIncomeType,
+    testPurchaseInnerTerritory,
     sellTerritory,
     selectCorner,
     payTribute,
