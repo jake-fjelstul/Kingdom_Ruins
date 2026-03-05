@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import rulesBackground from '../assets/rules_background.png';
+import rulesBackground from '../assets/rules_background.webp';
 
 const RULES_TEXT = `🏰 KINGDOM RUINS: OFFICIAL RULEBOOK
 
