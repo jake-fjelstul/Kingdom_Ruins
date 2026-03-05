@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { GameProvider, useGame } from './context/GameContext';
+import { SettingsProvider } from './context/SettingsContext';
 import { useAITurn } from './hooks/useAITurn';
 import GameSetup from './components/GameSetup';
 import AnalyticsPage from './components/AnalyticsPage';
@@ -207,24 +208,26 @@ function App() {
 
   return (
     <GameProvider>
-      {/* Preload all images on app startup */}
-      <ImagePreloader />
-      {view === 'analytics' && <AnalyticsPage onBack={() => setView('setup')} />}
-      {view === 'setup' && (
-        <GameSetup
-          onStart={(opts) => {
-            setStartOpts(opts || {});
-            setView('game');
-          }}
-          onViewAnalytics={() => setView('analytics')}
-        />
-      )}
-      {view === 'game' && (
-        <GameContent
-          skipLore={!!startOpts?.testingMode}
-          onRestart={() => setView('setup')}
-        />
-      )}
+      <SettingsProvider>
+        {/* Preload all images on app startup */}
+        <ImagePreloader />
+        {view === 'analytics' && <AnalyticsPage onBack={() => setView('setup')} />}
+        {view === 'setup' && (
+          <GameSetup
+            onStart={(opts) => {
+              setStartOpts(opts || {});
+              setView('game');
+            }}
+            onViewAnalytics={() => setView('analytics')}
+          />
+        )}
+        {view === 'game' && (
+          <GameContent
+            skipLore={!!startOpts?.testingMode}
+            onRestart={() => setView('setup')}
+          />
+        )}
+      </SettingsProvider>
     </GameProvider>
   );
 }

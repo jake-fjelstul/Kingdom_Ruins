@@ -122,6 +122,7 @@ const initialState = {
   victorId: null, // winner when gamePhase === 'ended'
   castleState: 'ruins', // 'ruins' | 'repaired' – center castle; repaired when pay to enter Blue Ruin, ruins on Gauntlet loss
   aiTurnSummaryByPlayerId: {}, // { [playerId]: string } – last turn summary for AI players (shown in treasury)
+  drewCardFromLandingThisTurn: false, // true after DRAW_CARD from landing; reset on NEXT_TURN so only one card popup per roll
 };
 
 const PENALTY_SPECIALS = ['banished', 'currency_tanked', 'rebellion', 'secrets_sold', 'bank_debt'];
@@ -175,6 +176,18 @@ function applyPenaltySpecialState(state, targetPlayerId, special) {
   return state;
 }
 
+/** Return a fresh full deck for the given type (used when a deck runs out so the player always gets a card). */
+function getFreshDeckForType(deckType) {
+  switch (deckType) {
+    case 'resource': return generateResourceCards();
+    case 'army': return generateArmyCards();
+    case 'defense': return generateDefenseCards();
+    case 'fate': return generateFateCards();
+    case 'penalty': return generatePenaltyCards();
+    default: return [];
+  }
+}
+
 // Game Reducer
 function gameReducer(state, action) {
   switch (action.type) {
@@ -210,6 +223,7 @@ function gameReducer(state, action) {
         victorId: null,
         castleState: 'ruins',
         aiTurnSummaryByPlayerId: {},
+        drewCardFromLandingThisTurn: false,
       };
     }
 
@@ -534,8 +548,13 @@ function gameReducer(state, action) {
     }
 
     case 'DRAW_CARD': {
+      const cp = state.players[state.currentPlayerIndex];
+      // Only one card per landing: ignore if current player already has a card
+      if (cp?.lastDrawnCard) return state;
       const { deckType, randomIndex } = action.payload;
-      const deck = state.cardDecks[deckType];
+      let deck = state.cardDecks[deckType];
+      // If deck is empty, reshuffle so the player always receives a card when landing on a card space
+      if (!deck?.length) deck = getFreshDeckForType(deckType);
       if (!deck?.length) return state;
       const i = Math.max(0, Math.min(randomIndex ?? 0, deck.length - 1));
       const drawnCard = deck[i];
@@ -543,39 +562,20 @@ function gameReducer(state, action) {
 
       return {
         ...state,
+        drewCardFromLandingThisTurn: true,
         cardDecks: {
           ...state.cardDecks,
           [deckType]: newDeck,
         },
         players: state.players.map(p =>
-          p.id === state.players[state.currentPlayerIndex].id
-            ? { ...p, lastDrawnCard: drawnCard }
-            : p
+          p.id === cp.id ? { ...p, lastDrawnCard: drawnCard } : p
         ),
       };
     }
 
-    case 'MERCENARY_DRAW': {
-      const MERCENARY_COST = 300;
-      const { deckType } = action.payload; // 'army' or 'defense'
-      if (deckType !== 'army' && deckType !== 'defense') return state;
-      const cp = state.players[state.currentPlayerIndex];
-      if (!cp || cp.gold < MERCENARY_COST) return state;
-      const deck = state.cardDecks[deckType];
-      if (!deck?.length) return state;
-      const i = Math.floor(Math.random() * deck.length);
-      const drawnCard = deck[i];
-      const newDeck = [...deck.slice(0, i), ...deck.slice(i + 1)];
-      return {
-        ...state,
-        cardDecks: { ...state.cardDecks, [deckType]: newDeck },
-        players: state.players.map(p =>
-          p.id === cp.id
-            ? { ...p, gold: Math.max(0, p.gold - MERCENARY_COST), lastDrawnCard: drawnCard }
-            : p
-        ),
-      };
-    }
+    case 'MERCENARY_DRAW':
+      // Mercenary draw removed: cards are only drawn by landing on card spaces.
+      return state;
 
     case 'TEST_DRAW_CARD': {
       const { card } = action.payload;
@@ -1112,7 +1112,9 @@ function gameReducer(state, action) {
     }
 
     case 'SET_LANDED_ON_START':
-      return { ...state, landedOnStart: action.payload };
+      // Landing on any START space should never lead to drawing cards this turn.
+      // Mark the turn as \"card already handled\" so mercenary/other draws are skipped.
+      return { ...state, landedOnStart: action.payload, drewCardFromLandingThisTurn: true };
 
     case 'SET_LANDED_ON_START_PHASE': {
       const land = state.landedOnStart;
@@ -1445,6 +1447,11 @@ function gameReducer(state, action) {
         else nextCannotBuy[leavingPlayerId] = left;
       }
 
+      const nextTurnSummaries = { ...(state.aiTurnSummaryByPlayerId || {}) };
+      if (leavingPlayerId != null && action.payload?.turnSummary != null) {
+        nextTurnSummaries[leavingPlayerId] = action.payload.turnSummary;
+      }
+
       return {
         ...state,
         currentPlayerIndex: nextIndex,
@@ -1462,6 +1469,8 @@ function gameReducer(state, action) {
         selectedCorner: null,
         selectedTerritory: null,
         pendingIncomeTypeSelection: null,
+        drewCardFromLandingThisTurn: false,
+        aiTurnSummaryByPlayerId: nextTurnSummaries,
       };
     }
 
@@ -1621,6 +1630,7 @@ function gameReducer(state, action) {
     }
 
     case 'END_GAME':
+      if (!state.testingMode) return state;
       return {
         ...state,
         gamePhase: 'ended',
@@ -1756,6 +1766,77 @@ function gameReducer(state, action) {
   }
 }
 
+/** Build a one-line turn summary for a single action (for human player analytics). */
+function getActionTurnSummary(action, before, state) {
+  if (!action?.type) return null;
+  const p = action.payload;
+  switch (action.type) {
+    case 'SET_DICE_RESULT': {
+      const dice = Array.isArray(p) ? p : (p?.dice ?? []);
+      const sum = dice.reduce((a, b) => a + b, 0);
+      return sum > 0 ? `Rolled ${sum} and moved` : null;
+    }
+    case 'MOVE_PLAYER_STEP':
+      return null; // movement steps are many; we already have "Rolled X and moved"
+    case 'MOVE_PLAYER_TO_POSITION':
+      return null; // final landing covered by space type below
+    case 'DRAW_CARD': {
+      const deckType = p?.deckType || 'card';
+      const label = deckType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      return `Drew ${label} card`;
+    }
+    case 'APPLY_CARD_EFFECT': {
+      const eff = p?.effect;
+      if (!eff) return 'Applied card effect';
+      const parts = [];
+      if (eff.gold != null && eff.gold !== 0) parts.push(`${eff.gold > 0 ? '+' : ''}${eff.gold} G`);
+      if (eff.army != null && eff.army !== 0) parts.push(`${eff.army > 0 ? '+' : ''}${eff.army} Army`);
+      if (eff.defense != null && eff.defense !== 0) parts.push(`${eff.defense > 0 ? '+' : ''}${eff.defense} Defense`);
+      return parts.length > 0 ? parts.join(', ') : 'Applied card effect';
+    }
+    case 'APPLY_SPECIAL_RESOURCE':
+    case 'APPLY_SPECIAL_ARMY':
+    case 'APPLY_SPECIAL_DEFENSE':
+    case 'APPLY_SPECIAL_FATE':
+      return 'Applied card effect';
+    case 'KEEP_DRAWN_CARD':
+      return 'Kept drawn card';
+    case 'PURCHASE_TERRITORY':
+      if (p?.name && p?.cost != null) return `Bought ${p.name} (-${p.cost}G)`;
+      return p?.name ? `Bought ${p.name}` : 'Bought territory';
+    case 'PAY_TRIBUTE':
+      return p?.amount != null ? `Paid ${p.amount}G tribute` : 'Paid tribute';
+    case 'ATTACK_PLAYER':
+      return 'Attacked territory';
+    case 'RESOLVE_COMBAT': {
+      const winnerId = p?.winnerId;
+      const currentId = before?.players?.[before?.currentPlayerIndex]?.id;
+      if (winnerId === currentId) return 'Won combat';
+      if (p?.attackerId === currentId || p?.defenderId === currentId) return 'Lost combat';
+      return null;
+    }
+    case 'SET_LANDED_ON_START':
+      return 'Landed on START';
+    case 'PAY_START_BRIBE':
+      return p?.amount != null ? `Paid ${p.amount}G at START` : 'Paid bribe at START';
+    case 'COLLECT_START_INCOME': {
+      const amount = state?.incomeNotification?.amount ?? 0;
+      return amount > 0 ? `Passed GO: +${amount}G` : 'Collected income at START';
+    }
+    case 'PURCHASE_INNER_TERRITORY':
+      const innerCost = p?.cost ?? 750;
+      return `Unlocked inner territory (-${innerCost}G)`;
+    case 'REQUEST_ENTER_BLUE_RUIN':
+      return 'Entered Blue Ruin Zone';
+    case 'MERCENARY_DRAW':
+      return p?.deckType ? `Mercenary: drew ${p.deckType} card` : 'Mercenary draw';
+    case 'USE_DOUBLES_BONUS':
+      return 'Used doubles bonus';
+    default:
+      return null;
+  }
+}
+
 // Create Context
 const GameContext = createContext();
 
@@ -1765,6 +1846,10 @@ export function GameProvider({ children }) {
   const stateRef = useRef(state);
   const lastActionRef = useRef(null);
   const lastStateBeforeRef = useRef(null);
+  /** Only one move at a time; prevents double movement and moving while a card is shown */
+  const movingPlayerIdRef = useRef(null);
+  /** Accumulated summary chunks for the current human player's turn (for analytics). */
+  const humanTurnSummaryRef = useRef([]);
 
   const recorderRef = useRef(null);
   if (!recorderRef.current) {
@@ -1789,11 +1874,24 @@ export function GameProvider({ children }) {
     const before = lastStateBeforeRef.current;
     const action = lastActionRef.current;
     if (before == null || !action || !recorder) return;
+    const currentPlayerId = before.players?.[before.currentPlayerIndex]?.id;
+    const currentPlayerIsAI = before.players?.[before.currentPlayerIndex]?.isAI === true;
+
+    if (action.type !== 'NEXT_TURN' && !currentPlayerIsAI) {
+      const line = getActionTurnSummary(action, before, state);
+      if (line) humanTurnSummaryRef.current.push(line);
+    }
+
     lastStateBeforeRef.current = null;
     lastActionRef.current = null;
     recorder.recordAction(action, before, state);
     if (action.type === 'NEXT_TURN') {
-      recorder.recordTurnEnd(before);
+      const turnSummary =
+        action.payload?.turnSummary ??
+        before.aiTurnSummaryByPlayerId?.[currentPlayerId] ??
+        (humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn');
+      recorder.recordTurnEnd(before, { turnSummary });
+      humanTurnSummaryRef.current = [];
       recorder.recordTurnStart(state);
     }
     if (state.gamePhase === 'ended' && before.gamePhase !== 'ended') {
@@ -1916,8 +2014,13 @@ export function GameProvider({ children }) {
   }, []);
 
   const rollDice = useCallback(() => {
+    const st = stateRef.current;
+    const cp = st.players[st.currentPlayerIndex];
+    if (cp?.lastDrawnCard) return;
     dispatch({ type: 'ROLL_DICE' });
     setTimeout(() => {
+      const now = stateRef.current;
+      if (now.players[now.currentPlayerIndex]?.lastDrawnCard) return;
       const { dice } = roll2d6();
       dispatch({ type: 'SET_DICE_RESULT', payload: dice });
     }, 1000);
@@ -1959,6 +2062,8 @@ export function GameProvider({ children }) {
     if (deckType) {
       const st = stateRef.current;
       const currentPlayer = st.players[st.currentPlayerIndex];
+      // Only one card per landing: never draw if they already have a card showing
+      if (currentPlayer?.lastDrawnCard) return;
       if (deckType === 'resource' && currentPlayer && (st.goldBlockedUntilPayoff || {})[currentPlayer.id]) {
         dispatch({ type: 'PAY_OFF_GOLD_BLOCK', payload: { playerId: currentPlayer.id } });
       }
@@ -1990,6 +2095,12 @@ export function GameProvider({ children }) {
     const currentState = stateRef.current;
     const currentPlayer = currentState.players[currentState.currentPlayerIndex];
     
+    // For AI turns, the AI state machine (useAITurn) controls when NEXT_TURN is dispatched.
+    // Avoid auto-advancing here to prevent double turn advances and out-of-sync AI behaviour.
+    if (currentPlayer?.isAI) {
+      return;
+    }
+
     const hasPendingAction = currentState.selectedTerritory !== null || 
                              currentPlayer?.lastDrawnCard !== null ||
                              hasAttackablePlayers(currentPlayer, currentState.players, currentState.boardSpaces, currentState.attackedPlayers, currentState.combatActive, currentState.attackImmunity);
@@ -1999,8 +2110,9 @@ export function GameProvider({ children }) {
     
     // If no pending actions, dice roll is cleared, no doubles bonus pending, and no combat, advance turn
     if (!hasPendingAction && currentState.diceRoll === null && !currentState.combatActive && !hasDoublesBonusPending) {
+      const summary = humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn';
       setTimeout(() => {
-        dispatch({ type: 'NEXT_TURN' });
+        dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
       }, 500); // Small delay to allow UI to update
     }
   }, [hasAttackablePlayers]);
@@ -2030,83 +2142,97 @@ export function GameProvider({ children }) {
   }, []);
 
   const movePlayer = useCallback((playerId, spaces) => {
-    // Calculate final position using current state
     const currentState = stateRef.current;
     const player = currentState.players.find(p => p.id === playerId);
     if (!player) return;
-    
+    if (player.lastDrawnCard) return;
+    if (movingPlayerIdRef.current !== null) return;
+
+    movingPlayerIdRef.current = playerId;
     const startPosition = player.position;
     const totalSpaces = currentState.boardSpaces.length;
-    
-    // Move one space at a time with animation delay
+
+    const STEP_MS = 400;
+    const SETTLE_BEFORE_CARD_MS = 700;
+
     let stepsRemaining = spaces;
     const moveStep = () => {
       if (stepsRemaining > 0) {
-        // Get current state
         const currentState = stateRef.current;
         const currentPlayer = currentState.players.find(p => p.id === playerId);
-        if (!currentPlayer) return;
-        
-        // Move one step
+        if (!currentPlayer) {
+          movingPlayerIdRef.current = null;
+          return;
+        }
+        if (currentPlayer.lastDrawnCard) {
+          movingPlayerIdRef.current = null;
+          return;
+        }
+
         dispatch({ type: 'MOVE_PLAYER_STEP', payload: { playerId } });
         stepsRemaining--;
-        
+
         if (stepsRemaining === 0) {
           setTimeout(() => {
-            dispatch({ type: 'DECREMENT_REVERSE_ROLLS', payload: { decPlayerId: playerId } });
-            dispatch({ type: 'CLEAR_DICE' });
-            const updatedState = stateRef.current;
-            const finalPlayer = updatedState.players.find(p => p.id === playerId);
-            if (finalPlayer) {
-              // Check for same-space combat (another player on this space)
-              const otherPlayersOnSpace = updatedState.players.filter(p => 
-                p.id !== playerId && p.position === finalPlayer.position
-              );
-              
-              if (otherPlayersOnSpace.length > 0) {
-                const defender = otherPlayersOnSpace[0];
-                startCombat(playerId, defender.id, null);
-              } else {
-                const space = updatedState.boardSpaces[finalPlayer.position];
-                const cornerIndices = [0, 11, 21, 32];
-                const startToFaction = { 0: 'king', 11: 'dragon', 32: 'knight', 21: 'wizard' };
-
-                let runStartLogic = false;
-                let startSpaceIndex = finalPlayer.position;
-                let startOwnerId = null;
-
-                if (cornerIndices.includes(finalPlayer.position) || (space && space.type === SPACE_TYPES.START)) {
-                  runStartLogic = true;
-                  startSpaceIndex = finalPlayer.position;
-                  const faction = startToFaction[finalPlayer.position];
-                  const owner = updatedState.players.find(p => p.faction === faction);
-                  startOwnerId = owner?.id ?? null;
-                }
-
-                if (runStartLogic) {
-                  dispatch({
-                    type: 'SET_LANDED_ON_START',
-                    payload: {
-                      moverId: playerId,
-                      ownerId: startOwnerId,
-                      spaceIndex: startSpaceIndex,
-                      phase: 'choose',
-                    },
-                  });
-                  if (startOwnerId && startOwnerId !== playerId) {
-                    dispatch({ type: 'SET_LANDED_ON_START_CHOICE', payload: { moverId: playerId, ownerId: startOwnerId } });
-                  }
-                } else if (space) {
-                  handleSpaceAction(space);
+            if (stateRef.current.players.find(p => p.id === playerId)?.lastDrawnCard) {
+              movingPlayerIdRef.current = null;
+              return;
+            }
+            setTimeout(() => {
+              if (stateRef.current.players.find(p => p.id === playerId)?.lastDrawnCard) {
+                movingPlayerIdRef.current = null;
+                return;
+              }
+              dispatch({ type: 'DECREMENT_REVERSE_ROLLS', payload: { decPlayerId: playerId } });
+              dispatch({ type: 'CLEAR_DICE' });
+              const updatedState = stateRef.current;
+              const finalPlayer = updatedState.players.find(p => p.id === playerId);
+              if (finalPlayer) {
+                const otherPlayersOnSpace = updatedState.players.filter(p =>
+                  p.id !== playerId && p.position === finalPlayer.position
+                );
+                if (otherPlayersOnSpace.length > 0) {
+                  const defender = otherPlayersOnSpace[0];
+                  startCombat(playerId, defender.id, null);
                 } else {
-                  checkAndAdvanceTurn();
+                  const space = updatedState.boardSpaces[finalPlayer.position];
+                  const cornerIndices = [0, 11, 21, 32];
+                  const startToFaction = { 0: 'king', 11: 'dragon', 32: 'knight', 21: 'wizard' };
+                  let runStartLogic = false;
+                  let startSpaceIndex = finalPlayer.position;
+                  let startOwnerId = null;
+                  if (cornerIndices.includes(finalPlayer.position) || (space && space.type === SPACE_TYPES.START)) {
+                    runStartLogic = true;
+                    startSpaceIndex = finalPlayer.position;
+                    const faction = startToFaction[finalPlayer.position];
+                    const owner = updatedState.players.find(p => p.faction === faction);
+                    startOwnerId = owner?.id ?? null;
+                  }
+                  if (runStartLogic) {
+                    dispatch({
+                      type: 'SET_LANDED_ON_START',
+                      payload: {
+                        moverId: playerId,
+                        ownerId: startOwnerId,
+                        spaceIndex: startSpaceIndex,
+                        phase: 'choose',
+                      },
+                    });
+                    if (startOwnerId && startOwnerId !== playerId) {
+                      dispatch({ type: 'SET_LANDED_ON_START_CHOICE', payload: { moverId: playerId, ownerId: startOwnerId } });
+                    }
+                  } else if (space) {
+                    handleSpaceAction(space);
+                  } else {
+                    checkAndAdvanceTurn();
+                  }
                 }
               }
-            }
-          }, 400); // Delay after final movement
+              movingPlayerIdRef.current = null;
+            }, SETTLE_BEFORE_CARD_MS);
+          }, STEP_MS);
         } else {
-          // Continue to next step
-          setTimeout(moveStep, 400); // 400ms delay between steps
+          setTimeout(moveStep, STEP_MS);
         }
       }
     };
@@ -2394,12 +2520,13 @@ export function GameProvider({ children }) {
   }, [checkAndAdvanceTurn]);
 
   const skipAttack = useCallback(() => {
-    // Clear any pending attack state and advance turn
-    dispatch({ type: 'NEXT_TURN' });
+    const summary = humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn';
+    dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
   }, []);
 
   const endTurn = useCallback(() => {
-    dispatch({ type: 'NEXT_TURN' });
+    const summary = humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn';
+    dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
   }, []);
 
   const useDoublesBonus = useCallback(() => {
@@ -2467,15 +2594,6 @@ export function GameProvider({ children }) {
     // Combat starts after entry animation (gauntletEntryAnimationComplete)
   }, []);
 
-  const mercenaryDraw = useCallback((deckType) => {
-    const st = stateRef.current;
-    const player = st.players[st.currentPlayerIndex];
-    if (!player || player.gold < 300 || (deckType !== 'army' && deckType !== 'defense')) return;
-    const deck = st.cardDecks[deckType];
-    if (!deck?.length) return;
-    dispatch({ type: 'MERCENARY_DRAW', payload: { deckType } });
-  }, []);
-
   const gauntletEntryAnimationComplete = useCallback(() => {
     const st = stateRef.current;
     const g = st.gauntlet;
@@ -2528,6 +2646,15 @@ export function GameProvider({ children }) {
     dispatch({ type: 'GAUNTLET_DECLINE_SACRIFICE' });
   }, []);
 
+  const finishGameForTesting = useCallback(() => {
+    const st = stateRef.current;
+    if (!st?.testingMode) return;
+    if (st.gamePhase !== 'playing' && st.gamePhase !== 'gauntlet') return;
+    const currentPlayer = st.players?.[st.currentPlayerIndex];
+    const victorId = currentPlayer?.id ?? st.players?.[0]?.id ?? null;
+    dispatch({ type: 'END_GAME', payload: { victorId } });
+  }, []);
+
   const value = {
     ...state,
     dispatch,
@@ -2572,11 +2699,11 @@ export function GameProvider({ children }) {
     resolveCombat,
     endCombat,
     requestEnterBlueRuin,
-    mercenaryDraw,
     gauntletEntryAnimationComplete,
     handleGauntletClose,
     gauntletSacrifice,
     gauntletDeclineSacrifice,
+    finishGameForTesting,
     getAnalyticsRecorder: () => recorderRef.current,
     hasAttackablePlayers,
   };

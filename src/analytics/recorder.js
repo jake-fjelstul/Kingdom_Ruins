@@ -43,18 +43,20 @@ export function createRecorder(options = {}) {
 
   function flush() {
     if (buffer.length === 0) return;
-    const batch = buffer.splice(0, buffer.length);
+    const batch = buffer.slice(0);
     try {
       onFlush?.(batch);
     } catch (e) {
       console.warn('[Kingdom Ruins Analytics] flush failed:', e);
     }
+    // Do not clear buffer: keep all events for "Export analytics (JSON)" so every turn is included.
   }
 
   function startSession() {
     sessionId = null;
     gameStartTs = Date.now();
     getSessionId();
+    buffer.length = 0;
   }
 
   function setTurnStartTs(ts) {
@@ -103,11 +105,12 @@ export function createRecorder(options = {}) {
     emit(EVENTS.TURN_START, { playerId: currentPlayer?.id }, state);
   }
 
-  function recordTurnEnd(state) {
+  function recordTurnEnd(state, opts = {}) {
     const currentPlayer = state?.players?.[state.currentPlayerIndex];
     emit(EVENTS.TURN_END, {
       playerId: currentPlayer?.id,
       turnDurationMs: getTurnDurationMs(),
+      turnSummary: opts.turnSummary ?? null,
     }, state);
   }
 

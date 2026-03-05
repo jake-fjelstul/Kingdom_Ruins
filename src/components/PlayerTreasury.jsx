@@ -153,8 +153,8 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
           </div>
         </div>
 
-        {/* AI turn summary */}
-        {player.isAI && aiTurnSummaryByPlayerId[player.id] && (
+        {/* Turn summary (AI and human) */}
+        {aiTurnSummaryByPlayerId[player.id] && (
           <div className="flex-shrink-0 rounded bg-slate-700/80 border border-slate-600 p-2">
             <div className="text-slate-300 font-semibold" style={{ fontSize: `clamp(0.55rem, ${availableHeight * 0.045}px, 0.7rem)`, marginBottom: 4 }}>Last turn</div>
             <p className="text-slate-200 text-xs leading-snug" style={{ fontSize: `clamp(0.5rem, ${availableHeight * 0.04}px, 0.65rem)` }}>

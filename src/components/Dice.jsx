@@ -4,7 +4,7 @@ import { useGame, canEnterBlueRuinZone } from '../context/GameContext';
 
 export default function Dice() {
   const game = useGame();
-  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, requestEnterBlueRuin, combatActive, cardDecks = {}, boardSpaces = [], attackedPlayers = {}, attackImmunity = {}, hasAttackablePlayers, territories = {}, testPurchaseInnerTerritory } = game;
+  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, finishGameForTesting, requestEnterBlueRuin, combatActive, cardDecks = {}, boardSpaces = [], attackedPlayers = {}, attackImmunity = {}, hasAttackablePlayers, territories = {}, testPurchaseInnerTerritory } = game;
   const currentPlayer = players[currentPlayerIndex];
   const cannotMove = !!(currentPlayer && (cannotMoveNextTurn || {})[currentPlayer.id]);
 
@@ -18,6 +18,18 @@ export default function Dice() {
     landedOnStartChoice !== null ||
     combatActive ||
     (currentPlayer && hasAttackablePlayers?.(currentPlayer, players, boardSpaces, attackedPlayers, combatActive, attackImmunity));
+
+  // Check if current roll is doubles (for display purposes) — defined before cannotRoll so it can be used there
+  const isDoubles = diceRoll !== null && Array.isArray(diceRoll) && diceRoll[0] === diceRoll[1];
+  const canRollAgain = doublesExtraRollAvailable && !doublesBonusUsed;
+
+  // Roll button should be grayed out when it's not the human's turn to roll (e.g. AI's turn, or already rolled with no doubles)
+  const cannotRoll =
+    !!currentPlayer?.isAI ||
+    isRolling ||
+    cannotMove ||
+    hasBlockingAction ||
+    (diceRoll !== null && !canRollAgain);
 
   const canEnter = gamePhase === 'playing' && !combatActive && currentPlayer && canEnterBlueRuinZone(currentPlayer, game);
   const [testDie1, setTestDie1] = useState(1);
@@ -35,13 +47,8 @@ export default function Dice() {
     }
   }, [currentPlayer?.id, currentPlayer?.gold, currentPlayer?.armyStrength, currentPlayer?.defenseStrength]);
 
-  // Check if current roll is doubles (for display purposes)
-  const isDoubles = diceRoll !== null && Array.isArray(diceRoll) && diceRoll[0] === diceRoll[1];
-  // Use the persistent flag instead of checking current dice state
-  const canRollAgain = doublesExtraRollAvailable && !doublesBonusUsed;
-
   const handleRoll = () => {
-    if (isRolling || diceRoll !== null || cannotMove || hasBlockingAction) return;
+    if (cannotRoll) return;
     rollDice();
   };
 
@@ -55,10 +62,10 @@ export default function Dice() {
     }, 200);
   };
 
+  // For human players only: schedule movement after dice land. AI movement is triggered by useAITurn so it isn't cancelled when effects re-run.
+  // Never schedule while a card is on screen so movement and cards never overlap.
   React.useEffect(() => {
-    if (diceRoll !== null && !isRolling && currentPlayer) {
-      // Always move with the current roll
-      // diceRoll is now an array [die1, die2], sum them for movement
+    if (diceRoll !== null && !isRolling && currentPlayer && !currentPlayer.isAI && !currentPlayer?.lastDrawnCard) {
       const diceValue = Array.isArray(diceRoll) ? diceRoll[0] + diceRoll[1] : diceRoll;
       const playerId = currentPlayer.id;
       const timeoutId = setTimeout(() => {
@@ -66,7 +73,7 @@ export default function Dice() {
       }, 500);
       return () => clearTimeout(timeoutId);
     }
-  }, [diceRoll, isRolling, currentPlayer?.id, movePlayer]);
+  }, [diceRoll, isRolling, currentPlayer?.id, currentPlayer?.isAI, currentPlayer?.lastDrawnCard, movePlayer]);
 
   const getDiceFace = (value) => {
     const dots = {
@@ -117,16 +124,14 @@ export default function Dice() {
       ) : (
         <motion.button
           onClick={handleRoll}
-          disabled={isRolling || diceRoll !== null || hasBlockingAction}
+          disabled={cannotRoll}
           className={`px-4 sm:px-6 py-2 sm:py-3 rounded-lg font-bold text-sm sm:text-base text-white shadow-lg transition-all ${
-            isRolling || diceRoll !== null || hasBlockingAction
-              ? 'bg-gray-500 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-700'
+            cannotRoll ? 'bg-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
           }`}
-          whileHover={!(isRolling || diceRoll !== null || hasBlockingAction) ? { scale: 1.05 } : undefined}
-          whileTap={!(isRolling || diceRoll !== null || hasBlockingAction) ? { scale: 0.95 } : undefined}
+          whileHover={!cannotRoll ? { scale: 1.05 } : undefined}
+          whileTap={!cannotRoll ? { scale: 0.95 } : undefined}
         >
-          {isRolling ? 'Rolling...' : diceRoll !== null ? 'Move Complete' : 'Roll Dice'}
+          {isRolling ? 'Rolling...' : diceRoll !== null ? 'Move Complete' : currentPlayer?.isAI ? "AI's turn" : 'Roll Dice'}
         </motion.button>
       )}
 
@@ -186,7 +191,7 @@ export default function Dice() {
         )}
       </AnimatePresence>
 
-      {!cannotMove && canRollAgain && diceRoll === null && !hasBlockingAction && (
+      {!cannotMove && !currentPlayer?.isAI && canRollAgain && diceRoll === null && !hasBlockingAction && (
         <div className="flex flex-col items-center gap-2 mt-2">
           <div className="text-yellow-300 text-sm font-semibold text-center">
             🎲 You rolled doubles! Roll again! 🎲
@@ -201,12 +206,12 @@ export default function Dice() {
           </motion.button>
         </div>
       )}
-      {!cannotMove && canRollAgain && (diceRoll !== null || hasBlockingAction) && (
+      {!cannotMove && !currentPlayer?.isAI && canRollAgain && (diceRoll !== null || hasBlockingAction) && (
         <div className="text-yellow-300 text-xs text-center mt-2">
           🎲 Doubles bonus: Complete your action to roll again
         </div>
       )}
-      {!cannotMove && diceRoll !== null && !isRolling && !hasBlockingAction && !canRollAgain && (
+      {!cannotMove && !currentPlayer?.isAI && diceRoll !== null && !isRolling && !hasBlockingAction && !canRollAgain && (
         <motion.button
           onClick={endTurn}
           className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold"
@@ -225,6 +230,15 @@ export default function Dice() {
       {testingMode && (
       <div className="mt-4 p-3 bg-gray-800/50 rounded-lg border border-gray-600 w-full max-w-md">
         <p className="text-xs text-gray-400 mb-2 text-center">🧪 Testing Mode</p>
+        <div className="flex justify-center mb-3">
+          <button
+            type="button"
+            onClick={finishGameForTesting}
+            className="px-4 py-2 rounded text-sm font-semibold bg-amber-600 hover:bg-amber-500 text-white"
+          >
+            Finish game → Win screen
+          </button>
+        </div>
         <div className="flex items-center gap-2 mb-3">
           <input
             type="number"

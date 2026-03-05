@@ -21,7 +21,6 @@ II. THE GOLD ECONOMY
 Gold is the fuel of your conquest. Use it for the following actions:
 ● Unlock Gateway: Pay 250 Gold per territory to unlock the two green squares in your quadrant.
 ● New Territory Spot: A player may buy one new territory spot on the outer loop for another 250 Gold.
-● Mercenary Contract: Pay 300 Gold at the end of your turn to draw one card from the Army or Defense deck.
 ● Bribe: Pay 100 Gold during a battle to add +1 to your dice roll (Max +3 per battle).
 ● Rebuild the Castle: Pay 500 Gold to the Treasury once you enter the Blue Ruin Zone.
 

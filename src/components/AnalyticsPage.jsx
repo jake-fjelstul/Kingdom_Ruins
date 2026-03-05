@@ -168,10 +168,241 @@ function formatMs(ms) {
   return sec ? `${min}m ${sec}s` : `${min}m`;
 }
 
+/** Human-readable label for board position (perimeter 0–41). */
+function getSpaceLabel(position) {
+  if (position == null) return 'unknown space';
+  const p = Number(position);
+  const startPositions = [0, 11, 21, 32];
+  if (startPositions.includes(p)) return 'START';
+  const newTerritoryIndices = [6, 12, 18, 24, 30, 36];
+  const newTerritoryNames = ['Moss Ward', 'The Aqueduct', 'Catacombs', 'Broken Keep', 'Ash Pits', 'Black Spire'];
+  const idx = newTerritoryIndices.indexOf(p);
+  if (idx >= 0) return newTerritoryNames[idx];
+  return `space ${p}`;
+}
+
+/** Get action events for a given player in a time range (for building turn narrative). */
+function getActionsForTurn(events, playerId, startTs, endTs) {
+  const sorted = [...events].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  return sorted.filter((e) => {
+    if (e?.event !== 'action' || !e?.payload) return false;
+    const t = e.ts ?? 0;
+    if (t <= startTs || t > endTs) return false;
+    const before = e.payload.stateBefore;
+    const cp = before?.players?.[before?.currentPlayerIndex];
+    return cp?.id === playerId;
+  });
+}
+
+/** Build a readable play-by-play narrative from a list of action events (same player's turn). */
+function buildTurnNarrativeFromEvents(turnActions, playerId, playerById) {
+  const parts = [];
+  let lastPosition = null;
+  let rollSum = null;
+  const defenderFactionById = {};
+  if (playerById) {
+    Object.entries(playerById).forEach(([id, p]) => {
+      if (p?.faction) defenderFactionById[id] = String(p.faction).charAt(0).toUpperCase() + String(p.faction).slice(1);
+    });
+  }
+
+  for (const e of turnActions) {
+    const type = e?.payload?.type;
+    const p = e?.payload?.payload ?? e?.payload ?? {};
+    const stateBefore = e?.payload?.stateBefore;
+    const stateAfter = e?.payload?.stateAfter;
+
+    switch (type) {
+      case 'SET_DICE_RESULT': {
+        const dice = Array.isArray(p) ? p : (p?.dice ?? e?.payload?.payload ?? []);
+        const a = dice[0] ?? 0;
+        const b = dice[1] ?? 0;
+        rollSum = a + b;
+        parts.push(rollSum > 0 ? `Rolled ${rollSum} (${a}+${b})` : 'Rolled dice');
+        break;
+      }
+      case 'MOVE_PLAYER_STEP': {
+        const moverId = p?.playerId ?? stateAfter?.players?.[stateAfter?.currentPlayerIndex]?.id;
+        if (moverId !== playerId) break;
+        const nextPos = stateAfter?.players?.find((pl) => pl.id === playerId)?.position;
+        if (nextPos != null) lastPosition = nextPos;
+        break;
+      }
+      case 'MOVE_PLAYER_TO_POSITION':
+        if (p?.playerId === playerId && p?.position != null) lastPosition = p.position;
+        break;
+      case 'DRAW_CARD': {
+        const deck = p?.deckType || 'card';
+        const label = String(deck).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+        parts.push(`Drew ${label} card`);
+        break;
+      }
+      case 'APPLY_CARD_EFFECT':
+      case 'APPLY_SPECIAL_RESOURCE':
+      case 'APPLY_SPECIAL_ARMY':
+      case 'APPLY_SPECIAL_DEFENSE':
+      case 'APPLY_SPECIAL_FATE':
+        parts.push('Applied card effect');
+        break;
+      case 'KEEP_DRAWN_CARD':
+        parts.push('Kept drawn card');
+        break;
+      case 'PURCHASE_TERRITORY':
+        parts.push(p?.name ? `Bought ${p.name}` : 'Bought territory');
+        break;
+      case 'PAY_TRIBUTE':
+        parts.push(p?.amount != null ? `Paid ${p.amount}G tribute` : 'Paid tribute');
+        break;
+      case 'ATTACK_PLAYER':
+        parts.push('Chose to attack');
+        break;
+      case 'START_COMBAT': {
+        const defId = p?.defenderId;
+        const defName = defenderFactionById[defId] || 'opponent';
+        parts.push(`Attacked ${defName}`);
+        break;
+      }
+      case 'RESOLVE_COMBAT': {
+        const winner = p?.winner ?? p?.winnerId;
+        if (winner == null) break;
+        const atk = p?.attackerTotal;
+        const def = p?.defenderTotal;
+        const scores = atk != null && def != null ? ` (${atk} vs ${def})` : '';
+        if (winner === playerId) parts.push(`Won combat${scores}`);
+        else if (p?.attackerId === playerId || p?.defenderId === playerId) parts.push(`Lost combat${scores}`);
+        break;
+      }
+      case 'SET_LANDED_ON_START':
+        parts.push('Landed on START');
+        break;
+      case 'SET_LANDED_ON_START_CHOICE':
+        parts.push('Landed on START (bribe or fight)');
+        break;
+      case 'PAY_START_BRIBE':
+        parts.push(p?.amount != null ? `Paid ${p.amount}G at START` : 'Paid bribe at START');
+        break;
+      case 'COLLECT_START_INCOME':
+        parts.push('Collected income at START');
+        break;
+      case 'CLEAR_LANDED_ON_START':
+        break;
+      case 'PURCHASE_INNER_TERRITORY':
+        parts.push('Bought inner territory');
+        break;
+      case 'REQUEST_ENTER_BLUE_RUIN':
+        parts.push('Entered Blue Ruin Zone');
+        break;
+      case 'MERCENARY_DRAW':
+        parts.push(p?.deckType ? `Mercenary draw (${p.deckType})` : 'Mercenary draw');
+        break;
+      case 'USE_DOUBLES_BONUS':
+        parts.push('Used doubles bonus');
+        break;
+      case 'SET_PLAYER_STATS':
+        break;
+      case 'SET_AI_TURN_SUMMARY':
+        break;
+      case 'NEXT_TURN':
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (lastPosition != null && rollSum != null && !parts.some((s) => s.includes('Moved to') || s.includes('Landed on'))) {
+    const label = getSpaceLabel(lastPosition);
+    parts.push(`Moved to ${label}`);
+  } else if (lastPosition != null && rollSum != null && parts.length > 0) {
+    const label = getSpaceLabel(lastPosition);
+    const lastPart = parts[parts.length - 1];
+    if (!lastPart.includes('START') && !lastPart.includes(label)) parts.push(`Landed on ${label}`);
+  }
+
+  return parts.length > 0 ? parts.join('. ') : 'No actions recorded';
+}
+
+/** Per-session list of turns with round, player, summary (from payload or derived from events), duration. */
+function computeTurnSummariesBySession(sessions) {
+  return sessions.map(([sessionId, events]) => {
+    const finalState = getFinalState(events);
+    const playerById = {};
+    if (finalState?.players?.length) {
+      finalState.players.forEach((p) => {
+        playerById[p.id] = p;
+      });
+    }
+    const sortedEvents = [...events].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const turnEnds = sortedEvents
+      .filter((e) => (e?.event === 'turn_end' || e?.event === 'turnEnd') && e?.payload != null)
+      .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+    const turns = [];
+    let prevTurnEndTs = 0;
+
+    for (const te of turnEnds) {
+      const pl = te.payload || {};
+      const playerId = pl.playerId;
+      const player = playerById[playerId];
+      const faction = player?.faction ?? pl.playerId ?? '—';
+      const name = typeof faction === 'string' ? faction.charAt(0).toUpperCase() + faction.slice(1) : '—';
+      const endTs = te.ts ?? 0;
+      const turnActions = getActionsForTurn(events, playerId, prevTurnEndTs, endTs);
+      const derivedSummary = buildTurnNarrativeFromEvents(turnActions, playerId, playerById);
+      const summary =
+        pl.turnSummary != null && String(pl.turnSummary).trim() !== ''
+          ? String(pl.turnSummary)
+          : derivedSummary;
+      turns.push({
+        round: pl.round ?? '—',
+        playerId,
+        playerName: name,
+        summary,
+        durationMs: pl.turnDurationMs,
+      });
+      prevTurnEndTs = endTs;
+    }
+
+    const turnStarts = sortedEvents.filter((e) => e?.event === 'turn_start' && e?.payload != null);
+    const lastTurnEndTs = turnEnds.length > 0 ? (turnEnds[turnEnds.length - 1].ts ?? 0) : 0;
+    const gameEndTs = sortedEvents.find((e) => e?.event === 'game_end')?.ts ?? Infinity;
+    if (turnStarts.length > turnEnds.length && lastTurnEndTs < gameEndTs) {
+      const lastStart = turnStarts[turnStarts.length - 1];
+      const ps = lastStart.payload || {};
+      const playerId = ps.playerId;
+      const player = playerById[playerId];
+      const faction = player?.faction ?? playerId ?? '—';
+      const name = typeof faction === 'string' ? faction.charAt(0).toUpperCase() + faction.slice(1) : '—';
+      const startTs = lastStart.ts ?? 0;
+      const turnActions = getActionsForTurn(events, playerId, lastTurnEndTs, gameEndTs + 1);
+      const derivedSummary = buildTurnNarrativeFromEvents(turnActions, playerId, playerById);
+      turns.push({
+        round: ps.round ?? '—',
+        playerId,
+        playerName: name,
+        summary: derivedSummary,
+        durationMs: gameEndTs !== Infinity ? gameEndTs - startTs : null,
+      });
+    }
+
+    return { sessionId, turns, playerById };
+  });
+}
+
+/** Single flat list of all turns across sessions for prominent display. */
+function computeAllTurnsFlat(turnSummariesBySession) {
+  const list = [];
+  turnSummariesBySession.forEach(({ sessionId, turns }, gameIndex) => {
+    turns.forEach((t) => list.push({ ...t, gameIndex: gameIndex + 1, sessionId }));
+  });
+  return list;
+}
+
 export default function AnalyticsPage({ onBack }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  /** null = all games, otherwise 0-based index into sessions (which file/game to view). */
+  const [selectedGameIndex, setSelectedGameIndex] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -263,13 +494,38 @@ export default function AnalyticsPage({ onBack }) {
   };
 
   const sessions = useMemo(() => iterSessions(events), [events]);
-  const winByOrder = useMemo(() => computeWinRateByTurnOrder(sessions), [sessions]);
-  const factionRates = useMemo(() => computeFactionWinRates(sessions), [sessions]);
-  const runaway = useMemo(() => computeRunawayLeader(sessions), [sessions]);
-  const roundStats = useMemo(() => computeRoundStats(sessions), [sessions]);
-  const durationStats = useMemo(() => computeDurationStats(events), [events]);
+
+  /** When viewing a single game, restrict to that session; otherwise use all. */
+  const filteredSessions = useMemo(() => {
+    if (selectedGameIndex == null || selectedGameIndex < 0 || selectedGameIndex >= sessions.length) {
+      return sessions;
+    }
+    return [sessions[selectedGameIndex]];
+  }, [sessions, selectedGameIndex]);
+
+  const filteredEvents = useMemo(() => {
+    if (selectedGameIndex == null || selectedGameIndex < 0 || selectedGameIndex >= sessions.length) {
+      return events;
+    }
+    const [, sessionEvents] = sessions[selectedGameIndex] || [];
+    return Array.isArray(sessionEvents) ? sessionEvents : [];
+  }, [events, sessions, selectedGameIndex]);
+
+  const winByOrder = useMemo(() => computeWinRateByTurnOrder(filteredSessions), [filteredSessions]);
+  const factionRates = useMemo(() => computeFactionWinRates(filteredSessions), [filteredSessions]);
+  const runaway = useMemo(() => computeRunawayLeader(filteredSessions), [filteredSessions]);
+  const roundStats = useMemo(() => computeRoundStats(filteredSessions), [filteredSessions]);
+  const durationStats = useMemo(() => computeDurationStats(filteredEvents), [filteredEvents]);
+  const turnSummariesBySession = useMemo(() => computeTurnSummariesBySession(filteredSessions), [filteredSessions]);
+  const allTurnsFlat = useMemo(() => computeAllTurnsFlat(turnSummariesBySession), [turnSummariesBySession]);
 
   const hasData = sessions.length > 0 && factionRates.total_games > 0;
+
+  /** Keep selection in range when session list changes (e.g. after new upload). */
+  const safeSelectedGameIndex =
+    selectedGameIndex != null && selectedGameIndex >= 0 && selectedGameIndex < sessions.length
+      ? selectedGameIndex
+      : null;
 
   return (
     <div className="min-h-screen bg-[#2d1b4d] text-slate-200 p-6">
@@ -310,11 +566,85 @@ export default function AnalyticsPage({ onBack }) {
               <p className="text-slate-400">
                 {sessions.length} session(s), {factionRates.total_games} completed game(s)
               </p>
+              <div className="flex items-center gap-2">
+                <label htmlFor="analytics-game-select" className="text-slate-400 text-sm whitespace-nowrap">
+                  View:
+                </label>
+                <select
+                  id="analytics-game-select"
+                  value={safeSelectedGameIndex === null ? '' : String(safeSelectedGameIndex)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSelectedGameIndex(v === '' ? null : parseInt(v, 10));
+                  }}
+                  className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                >
+                  <option value="">All games</option>
+                  {sessions.map(([sessionId], idx) => (
+                    <option key={sessionId} value={idx}>
+                      Game {idx + 1}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 cursor-pointer text-sm">
                 <input type="file" accept=".json" multiple onChange={handleFileUpload} className="hidden" />
                 Add or replace with file(s)…
               </label>
             </div>
+
+            <section className="bg-slate-800/80 rounded-xl p-6 border border-slate-600 mb-6">
+              <h2 className="text-xl font-semibold text-amber-200 mb-4">Turn history</h2>
+              <p className="text-slate-400 text-sm mb-3">Summary of every turn taken in each game (real and AI players).</p>
+              {allTurnsFlat.length > 0 ? (
+                <>
+                  <h3 className="text-sm font-medium text-amber-100/90 mb-2">All turns ({allTurnsFlat.length})</h3>
+                  <ul className="divide-y divide-slate-600 max-h-96 overflow-y-auto mb-6 rounded-lg border border-slate-600">
+                    {allTurnsFlat.map((t, i) => (
+                      <li key={`all-${i}`} className="px-3 py-2 text-sm bg-slate-800/50">
+                        <span className="font-medium text-amber-200/90">R{t.round}</span>
+                        <span className="mx-2 text-slate-500">·</span>
+                        <span className="text-slate-300 capitalize">{t.playerName}</span>
+                        <span className="mx-2 text-slate-500">·</span>
+                        <span className="text-slate-200">{t.summary}</span>
+                        {t.durationMs != null && (
+                          <span className="ml-2 text-slate-500">({formatMs(t.durationMs)})</span>
+                        )}
+                        <span className="ml-2 text-slate-500 text-xs">Game {t.gameIndex}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              <h3 className="text-sm font-medium text-amber-100/90 mb-2">By game</h3>
+              <div className="space-y-6">
+                {turnSummariesBySession.map(({ sessionId, turns }, idx) => (
+                  <div key={sessionId} className="border border-slate-600 rounded-lg overflow-hidden">
+                    <h4 className="text-sm font-medium text-amber-100/90 bg-slate-700/80 px-3 py-2">
+                      Game {idx + 1} — {turns.length} turn(s)
+                    </h4>
+                    <ul className="divide-y divide-slate-600 max-h-80 overflow-y-auto">
+                      {turns.length === 0 ? (
+                        <li className="px-3 py-2 text-slate-500 text-sm">No turn summaries recorded.</li>
+                      ) : (
+                        turns.map((t, i) => (
+                          <li key={`${sessionId}-${i}`} className="px-3 py-2 text-sm">
+                            <span className="font-medium text-amber-200/90">R{t.round}</span>
+                            <span className="mx-2 text-slate-500">·</span>
+                            <span className="text-slate-300 capitalize">{t.playerName}</span>
+                            <span className="mx-2 text-slate-500">·</span>
+                            <span className="text-slate-200">{t.summary}</span>
+                            {t.durationMs != null && (
+                              <span className="ml-2 text-slate-500">({formatMs(t.durationMs)})</span>
+                            )}
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </section>
 
             <section className="bg-slate-800/80 rounded-xl p-6 border border-slate-600 mb-6">
               <h2 className="text-xl font-semibold text-amber-200 mb-4">Win rate by turn order</h2>

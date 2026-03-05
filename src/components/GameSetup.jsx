@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useGame, FACTIONS } from '../context/GameContext';
-import startBackground from '../assets/start_background.png';
+import { useSettings } from '../context/SettingsContext';
+import startBackground from '../assets/start_background.webp';
 
 export default function GameSetup({ onStart, onViewAnalytics }) {
   const [playerCount, setPlayerCount] = useState(2);
   const [selectedPlayer, setSelectedPlayer] = useState(0);
   const [testingMode, setTestingMode] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [playerSelections, setPlayerSelections] = useState({
     0: 'KING',
     1: 'DRAGON',
@@ -15,6 +17,7 @@ export default function GameSetup({ onStart, onViewAnalytics }) {
   });
   const [playerIsAI, setPlayerIsAI] = useState({ 0: false, 1: false, 2: false, 3: false });
   const { initializeGame } = useGame();
+  const { aiSpeedMultiplier, setAiSpeedMultiplier, aiSpeedMin, aiSpeedMax } = useSettings();
 
   // Reset selections when player count changes
   useEffect(() => {
@@ -62,8 +65,72 @@ export default function GameSetup({ onStart, onViewAnalytics }) {
         animate={{ scale: 1 }}
         className="relative z-10 bg-white/60 backdrop-blur-sm rounded-lg shadow-2xl p-3 sm:p-3 md:p-4 w-full max-w-3xl"
       >
-        <h1 className="text-base sm:text-xl md:text-2xl lg:text-2xl font-bold text-center mb-1 sm:mb-2 text-gray-800">Kingdom Ruins</h1>
+        <div className="flex items-start justify-center">
+          <h1 className="text-base sm:text-xl md:text-2xl lg:text-2xl font-bold text-center mb-1 sm:mb-2 text-gray-800 flex-1">Kingdom Ruins</h1>
+          <button
+            type="button"
+            onClick={() => setShowSettings(true)}
+            className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-200/80 hover:text-gray-800 transition-colors -mt-0.5"
+            title="Settings"
+            aria-label="Settings"
+          >
+            <svg className="w-6 h-6 sm:w-7 sm:h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </button>
+        </div>
         <p className="text-center text-xs sm:text-sm md:text-base text-gray-600 mb-1 sm:mb-2 md:mb-3">A multiplayer turn-based strategy game</p>
+
+        <AnimatePresence>
+          {showSettings && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+              onClick={() => setShowSettings(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md border border-gray-200"
+              >
+                <h2 className="text-lg font-bold text-gray-800 mb-4">Settings</h2>
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    AI speed
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500 w-12">Slower</span>
+                    <input
+                      type="range"
+                      min={aiSpeedMin}
+                      max={aiSpeedMax}
+                      step={0.25}
+                      value={aiSpeedMultiplier}
+                      onChange={(e) => setAiSpeedMultiplier(parseFloat(e.target.value, 10))}
+                      className="flex-1 h-2 rounded-lg appearance-none bg-gray-200 accent-purple-600"
+                    />
+                    <span className="text-xs text-gray-500 w-12">Faster</span>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500 text-center">
+                    {aiSpeedMultiplier === 1 ? 'Normal' : aiSpeedMultiplier < 1 ? `${Math.round((1 - aiSpeedMultiplier) * 100)}% slower` : `${Math.round((aiSpeedMultiplier - 1) * 100)}% faster`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(false)}
+                  className="w-full py-2 px-4 rounded-lg bg-gray-200 text-gray-800 font-medium hover:bg-gray-300 transition-colors"
+                >
+                  Close
+                </button>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <div className="mb-2 sm:mb-3 md:mb-4">
           <label className="block text-gray-700 font-semibold mb-2 text-sm sm:text-base">

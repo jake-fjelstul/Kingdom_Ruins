@@ -105,6 +105,7 @@ export const PAYLOAD_SCHEMAS = {
     playerId: payload?.playerId,
     round: state?.currentRound ?? 0,
     turnDurationMs: payload?.turnDurationMs,
+    turnSummary: payload?.turnSummary ?? null,
   }),
 
   [EVENTS.DICE_ROLL]: (payload) => ({
