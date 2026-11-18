@@ -1,11 +1,11 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
-import resourceCardBg from '../assets/cards/resource.png';
-import armyCardBg from '../assets/cards/army.png';
-import defenseCardBg from '../assets/cards/defense.png';
-import fateCardBg from '../assets/cards/fate.png';
-import penaltyCardBg from '../assets/cards/penalty.png';
+import resourceCardBg from '../assets/cards/resource.webp';
+import armyCardBg from '../assets/cards/army.webp';
+import defenseCardBg from '../assets/cards/defense.webp';
+import fateCardBg from '../assets/cards/fate.webp';
+import penaltyCardBg from '../assets/cards/penalty.webp';
 
 const CARD_TYPE_BG = {
   resource: resourceCardBg,
@@ -22,7 +22,8 @@ export default function CardModal() {
 
   if (!card || !currentPlayer) return null;
 
-  const isKeepable = (card.type === 'fate' || card.type === 'penalty') && card.keepable === true;
+  // Only Fate cards can be kept. A Penalty you draw always applies to you (no keeping it to dodge the effect).
+  const isKeepable = card.type === 'fate' && card.keepable === true;
   const effect = card.effect || {};
   const isR8 = card.type === 'resource' && effect.special === 'rival_kingdom';
   const isSpecialNoTarget = card.type === 'resource' && (effect.special === 'toll_3_rounds' || effect.special === 'return_to_start_rewards');
@@ -88,15 +89,8 @@ export default function CardModal() {
 
   const handleKeep = () => keepDrawnCard();
 
-  const handlePrimary = () => {
-    if (isKeepable) handleKeep();
-    else if (isR8 || isA7 || isA0 || isF6 || isF7) return; // must choose player
-    else if (isSpecialNoTarget) handleSpecial();
-    else if (isArmySpecialNoTarget) handleArmySpecial();
-    else if (isDefenseSpecialNoTarget) handleDefenseSpecial();
-    else if (isFateSpecialNoTarget) handleFateSpecial();
-    else handleApply();
-  };
+  const isAITurn = !!currentPlayer.isAI; // the AI resolves its own cards (useAITurn); humans only watch
+  // Cards are only resolved with their own buttons — clicking outside the card does nothing
 
   const getCardColor = (type) => {
     const colors = {
@@ -126,7 +120,6 @@ export default function CardModal() {
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-        onClick={handlePrimary}
       >
         <motion.div
           initial={{ scale: 0, rotate: -180 }}
@@ -178,7 +171,7 @@ export default function CardModal() {
                   <div>No one can land on or pass through your current space for 1 round.</div>
                 )}
                 {effect.special === 'retreat_fortified' && (
-                  <div>Teleport to your highest-Defense territory.</div>
+                  <div>Teleport to your most fortified outer territory (or your START if you own none).</div>
                 )}
                 {effect.special === 'reverse_movement' && (
                   <div>Move backward for your next 4 rolls.</div>
@@ -190,7 +183,7 @@ export default function CardModal() {
                   <div>Swap board positions with the player you choose.</div>
                 )}
                 {effect.special === 'alliance' && (
-                  <div>Choose a player. You share Army stats for the next 3 turns.</div>
+                  <div>Choose a player. Neither of you can attack the other for your next 3 turns.</div>
                 )}
                 {effect.special === 'move_5_collect_100' && (
                   <div>Move forward 5 spaces and collect 100 Gold.</div>
@@ -214,7 +207,7 @@ export default function CardModal() {
                   <div>Give 1 Defense to the player on your right.</div>
                 )}
                 {effect.special === 'bank_debt' && (
-                  <div>Cannot gain Gold until you land on Resource and pay off 300 Gold.</div>
+                  <div>You owe the bank 300 Gold. Until it's repaid, all Gold you earn goes to the bank. Landing on a Resource space lets you pay from your treasury.</div>
                 )}
                 {!effect.special && (
                   <>
@@ -227,7 +220,9 @@ export default function CardModal() {
               </div>
             )}
 
-            {isR8 ? (
+            {isAITurn ? (
+            <p className="text-sm text-gray-900 text-center font-semibold">{currentPlayer.name} (AI) is deciding…</p>
+            ) : isR8 ? (
             <div className="space-y-2">
               <p className="text-sm text-gray-900 text-center font-medium">Choose a player to form a connection with:</p>
               <div className="flex flex-wrap gap-2 justify-center">
@@ -322,7 +317,7 @@ export default function CardModal() {
             </div>
             ) : isF7 ? (
             <div className="space-y-2">
-              <p className="text-sm text-gray-900 text-center font-medium">Choose a player to ally with:</p>
+              <p className="text-sm text-gray-900 text-center font-medium">Choose a player to swear a truce with:</p>
               <div className="flex flex-wrap gap-2 justify-center">
                 {players
                   .filter((p) => p.id !== currentPlayer.id)
@@ -340,7 +335,7 @@ export default function CardModal() {
             ) : isKeepable ? (
             <div className="space-y-2">
               <p className="text-sm text-gray-900 text-center">
-                Keep this card to use later on your turn, or sell it for 100g.
+                Keep this card to use later on your turn (you can also offer it to another player for 100g), or use it now.
               </p>
               <div className="flex gap-2">
                 <button

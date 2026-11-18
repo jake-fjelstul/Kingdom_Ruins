@@ -15,10 +15,11 @@ import CombatModal from './components/CombatModal';
 import StartChoiceModal from './components/StartChoiceModal';
 import StartLandingModal from './components/StartLandingModal';
 import GauntletSacrificeModal from './components/GauntletSacrificeModal';
+import CardSaleOfferModal from './components/CardSaleOfferModal';
 import VictoryScreen from './components/VictoryScreen';
 import Timer from './components/Timer';
 import ImagePreloader from './components/ImagePreloader';
-import gameFloorImgPng from './assets/game_floor.png';
+import gameFloorImgPng from './assets/game_floor.webp';
 
 function GameContent({ onRestart, skipLore = false }) {
   const [showLore, setShowLore] = useState(!skipLore);
@@ -198,6 +199,7 @@ function GameContent({ onRestart, skipLore = false }) {
       <StartLandingModal />
       <StartChoiceModal />
       <GauntletSacrificeModal />
+      <CardSaleOfferModal />
     </div>
   );
 }

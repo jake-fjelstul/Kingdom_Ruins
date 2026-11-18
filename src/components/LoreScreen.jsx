@@ -15,44 +15,51 @@ The Wizard Starts with +1% Army and +1% Defense  Utility focus
 The Dragon Starts with +2% Army Strength         Offensive focus
 The Knight Starts with +2% Defense Strength      Defensive focus
 
-Each player will roll: The lowest roll goes first.
+Each player will roll: the lowest roll goes first. Ties re-roll.
 
 II. THE GOLD ECONOMY
 Gold is the fuel of your conquest. Use it for the following actions:
-● Unlock Gateway: Pay 250 Gold per territory to unlock the two green squares in your quadrant.
-● New Territory Spot: A player may buy one new territory spot on the outer loop for another 250 Gold.
-● Bribe: Pay 100 Gold during a battle to add +1 to your dice roll (Max +3 per battle).
+● Unlock Gateway: Your quadrant has two inner green territories. The first costs 750 Gold, the second 1250 Gold.
+● New Territory Spot: Buy an outer territory when you land on it. Prices run from 200 Gold (Moss Ward) to 400 Gold (Black Spire).
+● Tribute: If you land on an opponent's outer territory you must pay its tribute (50–200 Gold) or attack it. Win the attack and the territory is yours.
+● Selling: You may sell a territory on your turn for half its price (outer 100–200 Gold, inner 375 or 625 Gold).
+● Bribe: Pay 100 Gold during a battle (before the dice are rolled) to add +1 to your total (Max +3 per battle).
 ● Rebuild the Castle: Pay 500 Gold to the Treasury once you enter the Blue Ruin Zone.
+● Debts: If you owe more than you have (tribute, a lost battle), you pay what you have and the rest is forgiven.
+● Bank Debt: The "bank is coming" penalty puts you 300 Gold in debt. Until it is repaid, all Gold you earn goes to the bank, and landing on a Resource space lets you pay from your treasury (instead of drawing a card).
 
 III. MOVEMENT & NAVIGATION
 Players move clockwise around the outer loop using two dice.
 ● Standard Move: Roll and move. If you land on a Card space, draw from that deck.
-● The Vanguard Jump (Cut-through): If you are standing on your START tile, you may spend 100 Gold to "warp" safely directly to any unlocked 'new territory' spot on the board. If you do not spend the money then you must attack.
-  ○ Note: If that territory is owned by an opponent, an immediate Tactical Clash begins. The defending player gets an added +1 to their roll.
+● The Vanguard Jump (Cut-through): If you start your turn on your own START tile, you may spend 100 Gold instead of rolling to "warp" directly to any outer territory spot you don't own.
+  ○ An unclaimed spot can be bought as usual.
+  ○ If that territory is owned by an opponent, an immediate Tactical Clash begins. The defending player gets an added +1 to their total. Win, and the territory is yours.
 ● Territory Access: You can only enter the inner green squares of your quadrant once you have paid the Unlock Gateway fee.
-● Income: Once you pass the start of your own territory you collect $100 + 1% army or defense for each of the territories owned. This must be chosen when the green territories are purchased and cannot be changed.
+● Income: Every time you pass your own START you collect 100 Gold, plus 100 Gold for each outer territory you own. Each inner territory you own also gives you +1 Army or +1 Defense (chosen when it is purchased; it cannot be changed).
 ● Doubles: If the player rolls doubles they get to roll again for a second turn, but only once per turn session.
 
 IV. THE TACTICAL CLASH (COMBAT)
-Combat occurs when two players land on the same space or when a player "Cut-throughs" into an occupied territory and chooses not to pay. A player can also attack another player if they are within three spaces of each other; in this case the attacker may move to the defender's position and the clash proceeds as usual.
+Combat occurs when two players land on the same space, when a player attacks an owned territory, or when a Vanguard Jump lands on an opponent's territory.
+● Nearby attack: At the start of your turn, if an opponent is 1–3 spaces ahead of you, you may attack them instead of rolling. You move to their space and the clash proceeds as usual. You may also attack after you move. Choosing "Skip" lets you roll normally.
 
-Bribes/Pot: When players bribe each other that money goes into the pot; whoever wins the battle gets the pot.
+Bribes/Pot: When players bribe, that money goes into the pot; whoever wins the battle gets the pot.
 
 The Battle Formula:
-Total Power = (2d6 roll) + (Total Card % Bonus) + (Gold Bribes)
+Total Power = (2d6 roll) + (Army or Defense %) + (Gold Bribes)
 ● Attacker uses Army %.
 ● Defender uses Defense %.
-● Outcome: The loser must pay the winner Gold equal to the difference ×10. If the winner wins by 5 or more, they may also force the loser to discard one 1% card of the winner's choice.
+● A Tactical Clash (Vanguard Jump, Gauntlet) uses Army + Defense for both sides.
+● All ties require a reroll.
+● Outcome: The loser pays the winner Gold equal to the difference ×10. If the winner wins by 5 or more (a Decisive Victory), they also take 1 point of the loser's stronger stat (Army or Defense).
 
-V. ALLIANCES
-Two players can enter into alliances with each other for a maximum of 3 rounds (rolls). During this time period their Army and Defense points combine respectively, so they can attack and defend against other players with their combined forces and split the loot.
-
-A player in an alliance can however choose to backstab their partner.
-If you backstab you get +3 on your next attack dice roll, but must draw 1 penalty card.
+V. TRUCES
+Some cards stop attacks between players. "A truce is sworn" (Fate): you and the chosen player cannot attack each other for your next 3 turns. "Rival kingdom" (Resource): you cannot attack the chosen player for 2 turns.
+While a truce stops you, you can't make nearby or territory attacks on that player, and landing on their space or their START is peaceful.
 
 VI. FATE & PENALTY CARDS
-Fate and Penalty Cards are cards that will either say to be used immediately as a normal card or may say to be picked up and held by players and either be used to help the player or be used against any other player on the holder's turn.
-Penalty and Fate Cards may be sold for 100 Gold.
+Most cards are used immediately. Some Fate cards may be kept and used later on your turn to help you.
+A Penalty card you draw always applies to you.
+Kept cards may be offered to another player for 100 Gold; the buyer can accept or decline.
 
 VII. THE ENDGAME: RESTORING PRIMER
 To initiate the winning sequence, you must meet the Entry Requirements:
@@ -61,15 +68,15 @@ To initiate the winning sequence, you must meet the Entry Requirements:
 3. Have at least 500 Gold (to pay for the rebuild).
 
 Step 1: Entering the Ruins
-Move your piece into the Blue Ruin Zone and pay the 500 Gold Rebuild Fee to the Treasury.
+At the start of your turn (instead of rolling), move your piece into the Blue Ruin Zone and pay the 500 Gold Rebuild Fee to the Treasury.
 
 Step 2: The Gauntlet of the Fallen
-Once you are in the center, you are the "Target." Before your next turn, every other player gets to initiate one final attack against you, regardless of where they are on the board.
-● The Gauntlet: You must resolve a Tactical Clash against every player. Every player combines their Army and Defense against your Army and Defense points. There is no limit on the amount of bribes you can use (100 Gold for 1 bonus point).
+Once you are in the center, you are the "Target." Every other player gets to initiate one final attack against you, regardless of where they are on the board.
+● The Gauntlet: You must resolve a Tactical Clash against every player. Every player combines their Army and Defense against your Army and Defense points. The realm rallies against a would-be ruler: each challenger adds +4 in a 2-player game, +3 with 3 players, or +2 with 4 players. There is no limit on the amount of bribes you can use (100 Gold for 1 bonus point).
 ● Victory: If you defeat the challengers, the kingdom is restored. YOU WIN! All ties require a reroll.
-● Defeat: If you lose this battle, your restoration fails.
-  ○ You are kicked out of the Blue Zone back to your START tile.
-  ○ You lose 1 territory (it becomes "Locked" again and must be re-purchased). If you own a new territory spot around the outer loop of the board you may choose to lose that and can stay in the middle and try the endgame again.`;
+● Defeat: If you lose a clash, your restoration fails — unless you pay for another chance:
+  ○ If you own an outer territory, you may give one up to stay in the center and try the Gauntlet again from the first challenger.
+  ○ Otherwise (or if you decline), you are kicked out of the Blue Zone back to your START tile, you lose 1 inner territory (it becomes "Locked" again and must be re-purchased), and your turn ends.`;
 
 export default function LoreScreen({ onContinue }) {
   const [showRules, setShowRules] = useState(false);

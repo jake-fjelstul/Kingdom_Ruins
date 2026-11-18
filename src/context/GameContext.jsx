@@ -34,6 +34,13 @@ export const CARD_TYPES = {
 export const BLUE_RUIN_FEE = 500;
 export const MIN_COMBINED_STATS = 10;
 export const GAUNTLET_BRIBE_COST = 100;
+/** Start the Gauntlet even if the 1.8s entry animation never reports finishing */
+const GAUNTLET_ENTRY_FALLBACK_MS = 4000;
+/**
+ * The realm rallies against a would-be ruler: every Gauntlet challenger adds this to their total,
+ * by player count. Tuned by simulation so the Gauntlet is a real test rather than a formality.
+ */
+export const GAUNTLET_CHALLENGER_BONUS = { 2: 4, 3: 3, 4: 2 };
 
 export const INNER_BY_FACTION = {
   king: ['inner-tl-1', 'inner-tl-2'],
@@ -42,7 +49,7 @@ export const INNER_BY_FACTION = {
   wizard: ['inner-br-1', 'inner-br-2'],
 };
 
-export const FACTION_TO_START_INDEX = { king: 0, dragon: 11, knight: 32, wizard: 21 };
+export const FACTION_TO_START_INDEX = { king: 0, dragon: 11, knight: 31, wizard: 20 };
 
 // Outer territory definitions: name, price, bribe, backgroundImage (NEW_TERRITORY spaces 6, 12, 18, 24, 30, 36)
 export const OUTER_TERRITORY_DEFS = [
@@ -61,6 +68,19 @@ export function getOuterTerritoryDef(spaceIndex) {
   return idx >= 0 ? OUTER_TERRITORY_DEFS[idx] : null;
 }
 
+/** Inner territories: the corner (-1) costs 750G, the side (-2) 1250G. */
+export function getInnerTerritoryCost(territoryId) {
+  return /-2$/.test(territoryId) ? 1250 : 750;
+}
+
+/** Selling returns half the territory's list price (outer 100–200G, inner 375G/625G). */
+export function getTerritorySalePrice(state, territoryId) {
+  if (territoryId.startsWith('inner-')) return Math.floor(getInnerTerritoryCost(territoryId) / 2);
+  const spaceIndex = state.territories?.[territoryId]?.spaceIndex ?? parseInt(territoryId.replace('territory-', ''), 10);
+  const price = getOuterTerritoryDef(spaceIndex)?.price ?? 300;
+  return Math.floor(price / 2);
+}
+
 export function canEnterBlueRuinZone(player, state) {
   if (!player || !state) return false;
   const inners = INNER_BY_FACTION[player.faction];
@@ -75,7 +95,7 @@ export function canEnterBlueRuinZone(player, state) {
 }
 
 // Initial State
-const initialState = {
+export const initialState = {
   players: [],
   currentPlayerIndex: 0,
   boardSpaces: [],
@@ -101,19 +121,19 @@ const initialState = {
   combatData: null, // { attackerId, defenderId, territoryId?, attackerRoll, defenderRoll, attackerTotal, defenderTotal, attackerBribe, defenderBribe, winner, difference }
   attackedPlayers: {}, // Track which players have been attacked by current player: { [playerId]: [defenderIds] }
   firstPlayerRolls: null, // [ { playerId, roll: [d1, d2], sum } ] when determining first player
-  tollBooths: {}, // { [ownerPlayerId]: { spaceIndex, roundsLeft } } – r6
+  tollBooths: {}, // { [ownerPlayerId]: { spaceIndex, turnsLeft } } – r6 (3 rounds = 3 × player count turns)
   attackImmunity: {}, // { [attackerId]: { [defenderId]: turnsRemaining } } – r8
   currentRound: 0,
   cannotMoveNextTurn: {}, // { [playerId]: true } – a9
   defensiveStructures: {}, // { [playerId]: true } – d6
-  sealedSpaces: {}, // { [spaceIndex]: roundsLeft } – d7
+  sealedSpaces: {}, // { [spaceIndex]: turnsLeft } – d7 (1 round = player count turns)
+  firstPlayerIndex: 0, // seat that went first; a round ends when play returns to it
   reverseMovement: {}, // { [playerId]: rollsLeft } – d9
   penaltyImmunity: {}, // { [playerId]: true } – d0
-  alliances: {}, // { [playerId]: { allyId, turnsLeft } } – f7
   reverseUntilBattleWin: {}, // { [playerId]: true } – f0
   cannotBuyTerritories: {}, // { [playerId]: turnsLeft } – p6
   territoryCostPlus100: {}, // { [playerId]: true } – p7
-  goldBlockedUntilPayoff: {}, // { [playerId]: true } – p0
+  goldBlockedUntilPayoff: {}, // { [playerId]: gold still owed to the bank } – p0 (earnings pay it down)
   testingMode: false,
   landedOnStart: null, // { moverId, ownerId, spaceIndex } when mover lands on any START – stay or fast travel
   landedOnStartChoice: null, // { moverId, ownerId } when staying on another's START – bribe or fight
@@ -123,12 +143,113 @@ const initialState = {
   castleState: 'ruins', // 'ruins' | 'repaired' – center castle; repaired when pay to enter Blue Ruin, ruins on Gauntlet loss
   aiTurnSummaryByPlayerId: {}, // { [playerId]: string } – last turn summary for AI players (shown in treasury)
   drewCardFromLandingThisTurn: false, // true after DRAW_CARD from landing; reset on NEXT_TURN so only one card popup per roll
+  movingPlayerId: null, // set while a token is animating step-by-step; blocks End Turn / NEXT_TURN
+  turnNumber: 0, // increments on every NEXT_TURN; stale NEXT_TURN requests carrying an old expectedTurn are ignored
+  hasRolledThisTurn: false, // current player has rolled dice this turn
+  attackedThisTurn: false, // current player launched a nearby attack this turn (attack replaces the roll)
+  attackOfferDismissed: false, // current player pressed "Skip Attack" for the current position
+  cardSaleOffer: null, // { sellerId, buyerId, cardIndex, price } awaiting the buyer's answer
 };
+
+/** Fields reset at the start of every turn. */
+const TURN_RESET_FIELDS = {
+  diceRoll: null,
+  doublesBonusUsed: false,
+  doublesExtraRollAvailable: false,
+  selectedCorner: null,
+  selectedTerritory: null,
+  pendingIncomeTypeSelection: null,
+  drewCardFromLandingThisTurn: false,
+  hasRolledThisTurn: false,
+  attackedThisTurn: false,
+  attackOfferDismissed: false,
+  cardSaleOffer: null,
+};
+
+/**
+ * Combat stat used by each side: Army (attacker) vs Defense (defender), or Army+Defense for both in
+ * tactical mode. combatData.defenderBonus adds to the defender (e.g. +1 against a Vanguard Jump) and
+ * combatData.attackerBonus to the attacker (Gauntlet challengers).
+ */
+export function getCombatStats(state, combatData) {
+  const attacker = state.players.find(p => p.id === combatData.attackerId);
+  const defender = state.players.find(p => p.id === combatData.defenderId);
+  if (!attacker || !defender) return null;
+  const tactical = combatData.combatMode === 'tactical';
+  const atkStat = (tactical
+    ? (attacker.armyStrength ?? 0) + (attacker.defenseStrength ?? 0)
+    : (attacker.armyStrength ?? 0)) + (combatData.attackerBonus || 0);
+  const defStat = (tactical
+    ? (defender.armyStrength ?? 0) + (defender.defenseStrength ?? 0)
+    : (defender.defenseStrength ?? 0)) + (combatData.defenderBonus || 0);
+  return { attacker, defender, atkStat, defStat };
+}
+
+/** True while a truce (r8 Rival Kingdom: one-way; f7 A truce is sworn: mutual) stops attackerId attacking targetId. */
+export function cannotAttack(state, attackerId, targetId) {
+  return ((state.attackImmunity || {})[attackerId]?.[targetId] ?? 0) > 0;
+}
 
 const PENALTY_SPECIALS = ['banished', 'currency_tanked', 'rebellion', 'secrets_sold', 'bank_debt'];
 
-function isGoldBlocked(state, playerId) {
-  return !!((state.goldBlockedUntilPayoff || {})[playerId]);
+/**
+ * Salary for passing your own START: 100G base + 100G per outer territory, and each inner territory
+ * adds +1 to the stat chosen when it was bought (Army or Defense).
+ */
+export function computeStartIncome(state, player) {
+  const owned = player.ownedTerritories || [];
+  const outerCount = owned.filter(t => !t.startsWith('inner-')).length;
+  let army = 0, defense = 0;
+  for (const tid of owned.filter(t => t.startsWith('inner-'))) {
+    const type = state.territories?.[tid]?.incomeType;
+    if (type === 'army') army++;
+    else if (type === 'defense') defense++;
+  }
+  return { gold: 100 + 100 * outerCount, outerCount, army, defense };
+}
+
+/** Apply a computeStartIncome result to one player (stats capped at 100). */
+function payStartIncome(players, playerId, income) {
+  return players.map(p => p.id === playerId
+    ? {
+        ...p,
+        gold: p.gold + income.gold,
+        armyStrength: Math.min(100, (p.armyStrength ?? 0) + income.army),
+        defenseStrength: Math.min(100, (p.defenseStrength ?? 0) + income.defense),
+      }
+    : p);
+}
+
+export const BANK_DEBT_AMOUNT = 300;
+
+/** Gold a player still owes the bank (card p0). While > 0, every Gold they earn goes to the bank. */
+export function getBankDebt(state, playerId) {
+  const v = (state.goldBlockedUntilPayoff || {})[playerId];
+  return typeof v === 'number' ? Math.max(0, v) : v ? BANK_DEBT_AMOUNT : 0;
+}
+
+/**
+ * Bank debt (p0): any Gold a debtor gained in this action is paid to the bank until the debt is
+ * cleared. Runs after every action, so every income source pays the debt down and nobody can get
+ * stuck unable to earn the Gold they need to repay it.
+ */
+function applyBankDebt(prev, next) {
+  const debts = next.goldBlockedUntilPayoff || {};
+  if (!Object.keys(debts).length || next === prev) return next;
+  let nextDebts = null;
+  let players = next.players;
+  for (const pid of Object.keys(debts)) {
+    const owed = getBankDebt(next, pid);
+    const before = prev.players.find(p => p.id === pid)?.gold;
+    const after = next.players.find(p => p.id === pid)?.gold;
+    if (before == null || after == null || !(after > before) || owed <= 0) continue;
+    const paid = Math.min(owed, after - before);
+    players = players.map(p => (p.id === pid ? { ...p, gold: p.gold - paid } : p));
+    nextDebts = nextDebts || { ...debts };
+    if (owed - paid > 0) nextDebts[pid] = owed - paid;
+    else delete nextDebts[pid];
+  }
+  return nextDebts ? { ...next, players, goldBlockedUntilPayoff: nextDebts } : next;
 }
 
 function applyPenaltySpecialState(state, targetPlayerId, special) {
@@ -170,7 +291,7 @@ function applyPenaltySpecialState(state, targetPlayerId, special) {
     return next;
   }
   if (special === 'bank_debt') {
-    next.goldBlockedUntilPayoff = { ...(state.goldBlockedUntilPayoff || {}), [targetPlayerId]: true };
+    next.goldBlockedUntilPayoff = { ...(state.goldBlockedUntilPayoff || {}), [targetPlayerId]: getBankDebt(state, targetPlayerId) + BANK_DEBT_AMOUNT };
     return next;
   }
   return state;
@@ -188,8 +309,173 @@ function getFreshDeckForType(deckType) {
   }
 }
 
+/** Hand the turn to the next player and tick every per-round / per-turn effect. */
+function applyNextTurn(state, payload) {
+  const nextIndex = (state.currentPlayerIndex + 1) % state.players.length;
+  const newCurrentPlayerId = state.players[nextIndex].id;
+  const newAttackedPlayers = { ...state.attackedPlayers };
+  if (!newAttackedPlayers[newCurrentPlayerId]) newAttackedPlayers[newCurrentPlayerId] = [];
+
+  // Toll booths and sealed spaces count down one per turn, so "N rounds" always means every player
+  // gets N turns, no matter which seat played the card.
+  const nextTollBooths = {};
+  for (const [ownerId, toll] of Object.entries(state.tollBooths || {})) {
+    const left = (toll.turnsLeft ?? 0) - 1;
+    if (left > 0) nextTollBooths[ownerId] = { ...toll, turnsLeft: left };
+  }
+  const nextSealed = {};
+  for (const [spaceIdx, turnsLeft] of Object.entries(state.sealedSpaces || {})) {
+    const left = (turnsLeft ?? 0) - 1;
+    if (left > 0) nextSealed[spaceIdx] = left;
+  }
+
+  // A round ends when play comes back to whoever went first (not seat 0)
+  let nextRound = state.currentRound ?? 0;
+  if (nextIndex === (state.firstPlayerIndex ?? 0) && state.players.length > 0) nextRound++;
+
+  let nextImmunity = { ...(state.attackImmunity || {}) };
+  const immForNew = nextImmunity[newCurrentPlayerId];
+  if (immForNew && typeof immForNew === 'object') {
+    const next = { ...immForNew };
+    for (const [defId, turns] of Object.entries(next)) {
+      const t = (turns ?? 0) - 1;
+      if (t <= 0) delete next[defId];
+      else next[defId] = t;
+    }
+    if (Object.keys(next).length === 0) delete nextImmunity[newCurrentPlayerId];
+    else nextImmunity[newCurrentPlayerId] = next;
+  }
+
+  const leavingPlayerId = state.players[state.currentPlayerIndex]?.id;
+  const nextCannotMove = { ...(state.cannotMoveNextTurn || {}) };
+  if (leavingPlayerId) delete nextCannotMove[leavingPlayerId];
+
+  let nextCannotBuy = { ...(state.cannotBuyTerritories || {}) };
+  const buyTurns = leavingPlayerId != null ? nextCannotBuy[leavingPlayerId] : undefined;
+  if (buyTurns != null) {
+    const left = (buyTurns ?? 0) - 1;
+    if (left <= 0) delete nextCannotBuy[leavingPlayerId];
+    else nextCannotBuy[leavingPlayerId] = left;
+  }
+
+  const nextTurnSummaries = { ...(state.aiTurnSummaryByPlayerId || {}) };
+  if (leavingPlayerId != null && payload?.turnSummary != null) {
+    nextTurnSummaries[leavingPlayerId] = payload.turnSummary;
+  }
+
+  return {
+    ...state,
+    currentPlayerIndex: nextIndex,
+    ...TURN_RESET_FIELDS,
+    turnNumber: (state.turnNumber ?? 0) + 1,
+    movingPlayerId: null,
+    attackedPlayers: newAttackedPlayers,
+    currentRound: nextRound,
+    tollBooths: nextTollBooths,
+    sealedSpaces: nextSealed,
+    attackImmunity: nextImmunity,
+    cannotMoveNextTurn: nextCannotMove,
+    cannotBuyTerritories: nextCannotBuy,
+    aiTurnSummaryByPlayerId: nextTurnSummaries,
+  };
+}
+
+/** Failed Gauntlet: re-lock one inner territory, send the target to START, restore the ruins, end the turn. */
+function kickOutOfGauntlet(state, payload) {
+  const g = state.gauntlet;
+  const target = g && state.players.find(p => p.id === g.targetId);
+  if (!target) return state;
+  const inners = INNER_BY_FACTION[target.faction] || [];
+  const ownedInners = inners.filter((id) => (target.ownedTerritories || []).includes(id));
+  const toRelock = ownedInners.length ? ownedInners[ownedInners.length - 1] : null; // lose the most advanced one
+  const nextTerritories = { ...state.territories };
+  if (toRelock) delete nextTerritories[toRelock];
+  const startIndex = FACTION_TO_START_INDEX[target.faction] ?? 0;
+  const kicked = {
+    ...state,
+    territories: nextTerritories,
+    players: state.players.map((p) =>
+      p.id === target.id
+        ? { ...p, position: startIndex, ownedTerritories: (p.ownedTerritories || []).filter((t) => t !== toRelock) }
+        : p
+    ),
+    combatActive: false,
+    combatData: null,
+    gauntlet: null,
+    gamePhase: 'playing',
+    castleState: 'ruins',
+  };
+  const cpIndex = state.players.findIndex((p) => p.id === target.id);
+  if (cpIndex !== state.currentPlayerIndex) return kicked;
+  return applyNextTurn(kicked, { turnSummary: payload?.turnSummary ?? 'Failed the Gauntlet' });
+}
+
+/** Opponents 1–3 spaces ahead that the player may still attack this turn. */
+export function hasAttackableTargets(player, allPlayers, boardSpaces, attackedPlayersList = {}, isCombatActive = false, attackImmunityMap = {}) {
+  if (!player || isCombatActive) return false;
+  const totalSpaces = boardSpaces.length;
+  if (!totalSpaces) return false;
+  const alreadyAttacked = attackedPlayersList[player.id] || [];
+  const myImmunity = attackImmunityMap[player.id] || {};
+  return allPlayers.some(p => {
+    if (p.id === player.id || alreadyAttacked.includes(p.id)) return false;
+    if ((myImmunity[p.id] ?? 0) > 0) return false; // r8: cannot attack for 2 turns
+    const forwardDistance = (p.position - player.position + totalSpaces) % totalSpaces;
+    return forwardDistance > 0 && forwardDistance <= 3;
+  });
+}
+
+/** The "Attack nearby players" offer is showing for the current player (until they attack or press Skip). */
+export function isAttackOfferPending(state) {
+  const cp = state.players[state.currentPlayerIndex];
+  if (!cp || state.attackOfferDismissed || state.movingPlayerId != null) return false;
+  return hasAttackableTargets(cp, state.players, state.boardSpaces, state.attackedPlayers, state.combatActive, state.attackImmunity);
+}
+
+/** Current player may still roll this turn (attacking replaces the roll). */
+export function canStillRoll(state) {
+  return !state.hasRolledThisTurn && !state.attackedThisTurn;
+}
+
+export const VANGUARD_JUMP_COST = 100;
+
+/**
+ * Vanguard Jump destinations for the current player: every outer territory space they don't own.
+ * Available only at the start of a turn (instead of rolling) while standing on their own START.
+ */
+export function getVanguardTargets(state) {
+  const cp = state.players[state.currentPlayerIndex];
+  if (!cp || state.gamePhase !== 'playing') return [];
+  if (!canStillRoll(state) || (state.cannotMoveNextTurn || {})[cp.id]) return [];
+  if (cp.position !== FACTION_TO_START_INDEX[cp.faction] || (cp.gold ?? 0) < VANGUARD_JUMP_COST) return [];
+  return NEW_TERRITORY_SPACE_INDICES
+    .map((spaceIndex) => {
+      const ownerId = state.territories?.[`territory-${spaceIndex}`]?.ownerId ?? null;
+      return { spaceIndex, name: getOuterTerritoryDef(spaceIndex)?.name ?? `Space ${spaceIndex}`, ownerId };
+    })
+    .filter((t) => t.ownerId !== cp.id && !(t.ownerId && cannotAttack(state, cp.id, t.ownerId)));
+}
+
+/** Everything for the current turn is resolved and the player has acted (rolled or attacked). */
+export function isTurnComplete(state) {
+  const cp = state.players[state.currentPlayerIndex];
+  if (!cp) return false;
+  if (canStillRoll(state)) return false; // hasn't rolled or attacked yet — e.g. just used a kept card
+  if (state.movingPlayerId != null || state.isRolling || state.diceRoll !== null) return false;
+  if (state.combatActive || state.cardSaleOffer) return false;
+  if (state.selectedTerritory !== null || state.selectedCorner !== null || state.pendingIncomeTypeSelection !== null) return false;
+  if (cp.lastDrawnCard != null || state.landedOnStart || state.landedOnStartChoice) return false;
+  if (state.doublesExtraRollAvailable && !state.doublesBonusUsed) return false;
+  if (isAttackOfferPending(state)) return false;
+  return true;
+}
+
 // Game Reducer
-function gameReducer(state, action) {
+export function gameReducer(state, action) {
+  return applyBankDebt(state, baseReducer(state, action));
+}
+
+function baseReducer(state, action) {
   switch (action.type) {
     case 'INITIALIZE_GAME': {
       const { players: initPlayers, boardSpaces: initSpaces, cardDecks: initDecks, testingMode: initTesting = false } = action.payload;
@@ -205,12 +491,12 @@ function gameReducer(state, action) {
         tollBooths: {},
         attackImmunity: {},
         currentRound: 0,
+        firstPlayerIndex: 0,
         cannotMoveNextTurn: {},
         defensiveStructures: {},
         sealedSpaces: {},
         reverseMovement: {},
         penaltyImmunity: {},
-        alliances: {},
         reverseUntilBattleWin: {},
         cannotBuyTerritories: {},
         territoryCostPlus100: {},
@@ -223,7 +509,12 @@ function gameReducer(state, action) {
         victorId: null,
         castleState: 'ruins',
         aiTurnSummaryByPlayerId: {},
-        drewCardFromLandingThisTurn: false,
+        combatActive: false,
+        combatData: null,
+        incomeNotification: null,
+        movingPlayerId: null,
+        turnNumber: 0,
+        ...TURN_RESET_FIELDS,
       };
     }
 
@@ -270,6 +561,7 @@ function gameReducer(state, action) {
         ...state,
         gamePhase: 'playing',
         currentPlayerIndex: firstIndex >= 0 ? firstIndex : 0,
+        firstPlayerIndex: firstIndex >= 0 ? firstIndex : 0,
         firstPlayerRolls: null,
       };
 
@@ -286,6 +578,7 @@ function gameReducer(state, action) {
         ...state,
         diceRoll: action.payload,
         isRolling: false,
+        hasRolledThisTurn: true,
         // If doubles rolled and bonus not used yet, mark extra roll as available
         doublesExtraRollAvailable: isDoubles && !state.doublesBonusUsed ? true : state.doublesExtraRollAvailable,
       };
@@ -304,65 +597,49 @@ function gameReducer(state, action) {
         doublesExtraRollAvailable: false, // Clear the flag when bonus is used
       };
 
-    case 'MOVE_PLAYER':
-      const { playerId, spaces } = action.payload;
-      const player = state.players.find(p => p.id === playerId);
-      if (!player) return state;
-      
-      const startPosition = player.position;
-      const totalSpaces = state.boardSpaces.length;
-      const newPosition = (startPosition + spaces) % totalSpaces;
-      
-      // Check if player passed their START space and collect income
-      // Map faction to corner position (START space)
-      const factionToStartPosition = {
-        'king': 0,    // top-left
-        'dragon': 11, // top-right
-        'knight': 32, // bottom-left
-        'wizard': 21, // bottom-right
+    case 'VANGUARD_JUMP': {
+      // Pay 100G and warp from your START to an outer territory space (uses this turn's move).
+      // Unowned: buy/skip prompt. Owned by an opponent: Tactical Clash, defender +1.
+      const { playerId, spaceIndex } = action.payload;
+      const cp = state.players[state.currentPlayerIndex];
+      if (!cp || cp.id !== playerId) return state;
+      const target = getVanguardTargets(state).find((t) => t.spaceIndex === spaceIndex);
+      if (!target) return state;
+      const jumped = {
+        ...state,
+        hasRolledThisTurn: true,
+        players: state.players.map(p =>
+          p.id === playerId ? { ...p, gold: p.gold - VANGUARD_JUMP_COST, position: spaceIndex } : p
+        ),
       };
-      const playerStartIndex = player ? factionToStartPosition[player.faction] : undefined;
-      
-      let updatedPlayers = state.players.map(p =>
-        p.id === playerId ? { ...p, position: newPosition } : p
-      );
-      
-      // Income collection: If player passed their START, collect:
-      // - Base 100G
-      // - +100G per outer territory (around the board)
-      // - +1% of chosen stat (army/defense) per inner territory, based on that territory's setting
-      if (playerStartIndex !== undefined && player.ownedTerritories.length > 0) {
-        const passedStart = (startPosition < playerStartIndex && newPosition >= playerStartIndex) ||
-                           (startPosition > playerStartIndex && newPosition < startPosition && spaces > 1) ||
-                           (startPosition === playerStartIndex && spaces > 0);
-        
-        if (passedStart) {
-          const innerTerritories = player.ownedTerritories.filter(t => t.startsWith('inner-'));
-          const outerTerritories = player.ownedTerritories.filter(t => !t.startsWith('inner-'));
-          
-          // Gold from outer territories: +100G each
-          const outerIncome = outerTerritories.length * 100;
-          
-          // Stat-based income from inner territories: 1% of chosen stat per territory
-          const innerIncome = innerTerritories.reduce((sum, tid) => {
-            const territory = state.territories[tid];
-            const tIncomeType = territory?.incomeType;
-            if (!tIncomeType) return sum;
-            
-            const statPercentage = tIncomeType === 'army' ? player.armyStrength : player.defenseStrength;
-            const perTerritoryIncome = statPercentage * 0.01; // 1% of stat percentage value
-            return sum + perTerritoryIncome;
-          }, 0);
-          
-          const income = 100 + outerIncome + innerIncome;
-          const roundInc = Math.round(income);
-          const skipGold = isGoldBlocked(state, playerId);
-          updatedPlayers = updatedPlayers.map(p =>
-            p.id === playerId ? { ...p, gold: skipGold ? p.gold : p.gold + roundInc } : p
-          );
-        }
-      }
-      return { ...state, players: updatedPlayers };
+      if (!target.ownerId) return { ...jumped, selectedTerritory: spaceIndex };
+      return {
+        ...jumped,
+        combatActive: true,
+        combatData: {
+          attackerId: playerId,
+          defenderId: target.ownerId,
+          territoryId: `territory-${spaceIndex}`,
+          diceRolled: false,
+          attackerBribe: 0,
+          defenderBribe: 0,
+          bribePot: 0,
+          combatSource: 'vanguard',
+          combatMode: 'tactical',
+          defenderBonus: 1,
+        },
+      };
+    }
+
+    case 'MOVE_STARTED':
+      return { ...state, movingPlayerId: action.payload.playerId };
+
+    case 'MOVE_FINISHED':
+      // A new position means a fresh "attack nearby?" offer
+      return { ...state, movingPlayerId: null, attackOfferDismissed: false };
+
+    case 'DISMISS_ATTACK_OFFER':
+      return { ...state, attackOfferDismissed: true };
 
     case 'MOVE_PLAYER_TO_POSITION':
       const { playerId: movePlayerId, position: targetPosition } = action.payload;
@@ -377,7 +654,7 @@ function gameReducer(state, action) {
       };
 
     case 'MOVE_PLAYER_STEP': {
-      const { playerId: stepPlayerId } = action.payload;
+      const { playerId: stepPlayerId, forceForward = false } = action.payload;
       const stepPlayer = state.players.find(p => p.id === stepPlayerId);
       if (!stepPlayer) return state;
 
@@ -385,13 +662,13 @@ function gameReducer(state, action) {
       const stepTotalSpaces = state.boardSpaces.length;
       const revRolls = (state.reverseMovement || {})[stepPlayerId] ?? 0;
       const revUntilWin = !!((state.reverseUntilBattleWin || {})[stepPlayerId]);
-      const useReverse = revRolls > 0 || revUntilWin;
+      const useReverse = !forceForward && (revRolls > 0 || revUntilWin); // f8 always moves forward
       const dir = useReverse ? -1 : 1;
       let stepNextPosition = (stepCurrentPosition + dir + stepTotalSpaces) % stepTotalSpaces;
 
       // d7: sealed space – cannot land on or pass through; lose this step (except START spaces – players must be able to land on START for stay/fast travel)
       const sealed = state.sealedSpaces || {};
-      const cornerIndices = [0, 11, 21, 32];
+      const cornerIndices = [0, 11, 20, 31];
       const isStartSpace = cornerIndices.includes(stepNextPosition);
       if (!isStartSpace && (sealed[stepNextPosition] ?? 0) > 0) return state;
 
@@ -410,7 +687,7 @@ function gameReducer(state, action) {
       }
 
       const stepFactionToStartPosition = {
-        king: 0, dragon: 11, knight: 32, wizard: 21,
+        king: 0, dragon: 11, knight: 31, wizard: 20,
       };
       const stepPlayerStartIndex = stepPlayer ? stepFactionToStartPosition[stepPlayer.faction] : undefined;
 
@@ -424,8 +701,9 @@ function gameReducer(state, action) {
       // Income collection: If player passed their START, collect:
       // - Base 100G
       // - +100G per outer territory (around the board)
-      // - +1% of chosen stat (army/defense) per inner territory, based on that territory's setting
-      if (stepPlayerStartIndex !== undefined && stepPlayer.ownedTerritories.length > 0) {
+      // - +1 of the chosen stat (army/defense) per inner territory (computeStartIncome)
+      // Everyone collects the 100G base salary, territories or not (rulebook)
+      if (stepPlayerStartIndex !== undefined) {
         // Check if player passed their START - they just need to go past it
         const wrappedAround = stepCurrentPosition === stepTotalSpaces - 1 && stepNextPosition === 0;
         // Passed START if:
@@ -436,29 +714,8 @@ function gameReducer(state, action) {
         const passedStartOnWrap = wrappedAround && stepPlayerStartIndex === 0;
         
         if (passedStartForward || passedStartOnWrap) {
-          const innerTerritories = stepPlayer.ownedTerritories.filter(t => t.startsWith('inner-'));
-          const outerTerritories = stepPlayer.ownedTerritories.filter(t => !t.startsWith('inner-'));
-          
-          // Gold from outer territories: +100G each
-          const outerIncome = outerTerritories.length * 100;
-          
-          // Stat-based income from inner territories: 1% of chosen stat per territory
-          const innerIncome = innerTerritories.reduce((sum, tid) => {
-            const territory = state.territories[tid];
-            const tIncomeType = territory?.incomeType;
-            if (!tIncomeType) return sum;
-            
-            const statPercentage = tIncomeType === 'army' ? stepPlayer.armyStrength : stepPlayer.defenseStrength;
-            const perTerritoryIncome = statPercentage * 0.01; // 1% of stat percentage value
-            return sum + perTerritoryIncome;
-          }, 0);
-          
-          const stepIncome = 100 + outerIncome + innerIncome;
-          const roundedIncome = Math.round(stepIncome);
-          const skipStepGold = isGoldBlocked(state, stepPlayerId);
-          stepUpdatedPlayers = stepUpdatedPlayers.map(p =>
-            p.id === stepPlayerId ? { ...p, gold: skipStepGold ? p.gold : p.gold + roundedIncome } : p
-          );
+          const income = computeStartIncome(state, stepPlayer);
+          stepUpdatedPlayers = payStartIncome(stepUpdatedPlayers, stepPlayerId, income);
 
           const tollBoothsIncome = state.tollBooths || {};
           for (const [ownerId, toll] of Object.entries(tollBoothsIncome)) {
@@ -467,10 +724,9 @@ function gameReducer(state, action) {
             const ownerP = stepUpdatedPlayers.find(p => p.id === ownerId);
             if (!moverP || !ownerP) continue;
             const tollPay = Math.min(50, moverP.gold);
-            const skipTollRecv = isGoldBlocked(state, ownerId);
             stepUpdatedPlayers = stepUpdatedPlayers.map(p => {
               if (p.id === stepPlayerId) return { ...p, gold: Math.max(0, p.gold - tollPay) };
-              if (p.id === ownerId) return { ...p, gold: skipTollRecv ? p.gold : p.gold + tollPay };
+              if (p.id === ownerId) return { ...p, gold: p.gold + tollPay };
               return p;
             });
             break;
@@ -490,9 +746,7 @@ function gameReducer(state, action) {
           return {
             ...stepStateWithAttacked,
             players: stepUpdatedPlayers,
-            ...(!skipStepGold && {
-              incomeNotification: { playerId: stepPlayerId, amount: roundedIncome, statType: stepPlayer.incomeType },
-            }),
+            incomeNotification: { playerId: stepPlayerId, amount: income.gold, outerCount: income.outerCount, army: income.army, defense: income.defense, debt: getBankDebt(state, stepPlayerId) },
           };
         }
       }
@@ -505,10 +759,9 @@ function gameReducer(state, action) {
         const owner = stepUpdatedPlayers.find(p => p.id === ownerId);
         if (!mover || !owner) continue;
         const tollPay = Math.min(50, mover.gold);
-        const skipTollRecv = isGoldBlocked(state, ownerId);
         stepUpdatedPlayers = stepUpdatedPlayers.map(p => {
           if (p.id === stepPlayerId) return { ...p, gold: Math.max(0, p.gold - tollPay) };
-          if (p.id === ownerId) return { ...p, gold: skipTollRecv ? p.gold : p.gold + tollPay };
+          if (p.id === ownerId) return { ...p, gold: p.gold + tollPay };
           return p;
         });
         break;
@@ -533,16 +786,19 @@ function gameReducer(state, action) {
 
     case 'PAY_OFF_GOLD_BLOCK': {
       const { playerId: payOffPlayerId } = action.payload;
+      // Landing on Resource while in debt: pay what you can from your treasury (partial payments count)
       const payOffPlayer = state.players.find(p => p.id === payOffPlayerId);
-      if (!payOffPlayer || !(state.goldBlockedUntilPayoff || {})[payOffPlayerId]) return state;
-      const amount = Math.min(300, payOffPlayer.gold);
+      const owed = getBankDebt(state, payOffPlayerId);
+      if (!payOffPlayer || owed <= 0) return state;
+      const paid = Math.min(owed, Math.max(0, payOffPlayer.gold));
       const nextBlock = { ...(state.goldBlockedUntilPayoff || {}) };
-      delete nextBlock[payOffPlayerId];
+      if (owed - paid > 0) nextBlock[payOffPlayerId] = owed - paid;
+      else delete nextBlock[payOffPlayerId];
       return {
         ...state,
         goldBlockedUntilPayoff: nextBlock,
         players: state.players.map(p =>
-          p.id === payOffPlayerId ? { ...p, gold: Math.max(0, p.gold - amount) } : p
+          p.id === payOffPlayerId ? { ...p, gold: p.gold - paid } : p
         ),
       };
     }
@@ -551,12 +807,15 @@ function gameReducer(state, action) {
       const cp = state.players[state.currentPlayerIndex];
       // Only one card per landing: ignore if current player already has a card
       if (cp?.lastDrawnCard) return state;
-      const { deckType, randomIndex } = action.payload;
+      const { deckType, randomIndex, excludeCardIds = [] } = action.payload;
       let deck = state.cardDecks[deckType];
       // If deck is empty, reshuffle so the player always receives a card when landing on a card space
       if (!deck?.length) deck = getFreshDeckForType(deckType);
       if (!deck?.length) return state;
-      const i = Math.max(0, Math.min(randomIndex ?? 0, deck.length - 1));
+      // excludeCardIds (e.g. f8 after an f8 move) are skipped; they stay in the deck
+      const drawable = deck.map((c, idx) => idx).filter((idx) => !excludeCardIds.includes(deck[idx].id));
+      if (!drawable.length) return state;
+      const i = drawable[Math.max(0, Math.min(randomIndex ?? 0, drawable.length - 1))];
       const drawnCard = deck[i];
       const newDeck = [...deck.slice(0, i), ...deck.slice(i + 1)];
 
@@ -613,14 +872,13 @@ function gameReducer(state, action) {
         if (!pl) return state;
         const count = pl.ownedTerritories?.length ?? 0;
         const gold = (effect.amountPer ?? 50) * count;
-        const skipG = gold > 0 && isGoldBlocked(state, pid);
         return {
           ...state,
           players: state.players.map(p => {
             if (p.id !== pid) return p;
             return {
               ...p,
-              gold: skipG ? p.gold : Math.max(0, p.gold + gold),
+              gold: Math.max(0, p.gold + gold),
               lastDrawnCard: null,
             };
           }),
@@ -628,14 +886,13 @@ function gameReducer(state, action) {
       }
       if (effect?.special) return state; // Handled by APPLY_SPECIAL_*
       const eg = effect.gold || 0;
-      const skipGold = eg > 0 && isGoldBlocked(state, pid);
       return {
         ...state,
         players: state.players.map(p => {
           if (p.id !== pid) return p;
           return {
             ...p,
-            gold: skipGold ? p.gold : Math.max(0, p.gold + eg),
+            gold: Math.max(0, p.gold + eg),
             armyStrength: Math.max(0, Math.min(100, p.armyStrength + (effect.army || 0))),
             defenseStrength: Math.max(0, Math.min(100, p.defenseStrength + (effect.defense || 0))),
             lastDrawnCard: null,
@@ -648,14 +905,14 @@ function gameReducer(state, action) {
       const { cardId, playerId, targetPlayerId } = action.payload;
       const actor = state.players.find(p => p.id === playerId);
       if (!actor) return state;
-      const factionToStart = { king: 0, dragon: 11, knight: 32, wizard: 21 };
+      const factionToStart = { king: 0, dragon: 11, knight: 31, wizard: 20 };
       const startIndex = factionToStart[actor.faction];
 
       if (cardId === 'r6') {
         const spaceIndex = actor.position;
         return {
           ...state,
-          tollBooths: { ...state.tollBooths, [playerId]: { spaceIndex, roundsLeft: 3 } },
+          tollBooths: { ...state.tollBooths, [playerId]: { spaceIndex, turnsLeft: 3 * state.players.length } },
           players: state.players.map(p =>
             p.id === playerId ? { ...p, lastDrawnCard: null } : p
           ),
@@ -666,43 +923,25 @@ function gameReducer(state, action) {
         const target = state.players.find(p => p.id === targetPlayerId);
         if (!target || targetPlayerId === playerId) return state;
         const imm = { ...(state.attackImmunity[playerId] || {}), [targetPlayerId]: 2 };
-        const skipA = isGoldBlocked(state, playerId);
-        const skipB = isGoldBlocked(state, targetPlayerId);
         return {
           ...state,
           attackImmunity: { ...state.attackImmunity, [playerId]: imm },
           players: state.players.map(p => {
-            if (p.id === playerId) return { ...p, gold: skipA ? p.gold : p.gold + 200, lastDrawnCard: null };
-            if (p.id === targetPlayerId) return { ...p, gold: skipB ? p.gold : p.gold + 200 };
+            if (p.id === playerId) return { ...p, gold: p.gold + 200, lastDrawnCard: null };
+            if (p.id === targetPlayerId) return { ...p, gold: p.gold + 200 };
             return p;
           }),
         };
       }
 
       if (cardId === 'r9') {
-        const inner = (actor.ownedTerritories || []).filter(t => t.startsWith('inner-'));
-        const outer = (actor.ownedTerritories || []).filter(t => !t.startsWith('inner-'));
-        const outerIncome = outer.length * 100;
-        const innerIncome = inner.reduce((sum, tid) => {
-          const t = state.territories[tid];
-          const ty = t?.incomeType;
-          if (!ty) return sum;
-          const stat = ty === 'army' ? actor.armyStrength : actor.defenseStrength;
-          return sum + stat * 0.01;
-        }, 0);
-        const income = Math.round(100 + outerIncome + innerIncome);
-        const skipG = isGoldBlocked(state, playerId);
+        // Return to your START and collect your salary (including inner-territory stat gains)
+        const income = computeStartIncome(state, actor);
         return {
           ...state,
-          players: state.players.map(p => {
-            if (p.id !== playerId) return p;
-            return {
-              ...p,
-              position: startIndex,
-              gold: skipG ? p.gold : Math.max(0, p.gold + income),
-              lastDrawnCard: null,
-            };
-          }),
+          players: payStartIncome(state.players, playerId, income).map(p =>
+            p.id === playerId ? { ...p, position: startIndex, lastDrawnCard: null } : p
+          ),
         };
       }
 
@@ -710,7 +949,7 @@ function gameReducer(state, action) {
     }
 
     case 'APPLY_SPECIAL_ARMY': {
-      const { cardId, playerId, targetPlayerId } = action.payload;
+      const { cardId, playerId, targetPlayerId, rolls: a7Rolls } = action.payload;
       const actor = state.players.find(p => p.id === playerId);
       if (!actor) return state;
       const totalSpaces = state.boardSpaces.length;
@@ -736,8 +975,8 @@ function gameReducer(state, action) {
         if (!target || targetPlayerId === playerId) {
           return { ...state, players: state.players.map(p => p.id === playerId ? { ...p, lastDrawnCard: null } : p) };
         }
-        const rollA = rollD6();
-        const rollB = rollD6();
+        // Dice come from the action (rolled in applyArmySpecial) so the reducer stays pure
+        const [rollA, rollB] = Array.isArray(a7Rolls) ? a7Rolls : [0, 0];
         let next = state.players.map(p => {
           if (p.id !== playerId && p.id !== targetPlayerId) return p;
           if (p.id === playerId) return { ...p, lastDrawnCard: null };
@@ -766,12 +1005,11 @@ function gameReducer(state, action) {
         }
         const owner = state.players.find(p => p.id === best.ownerId);
         const steal = owner && actor.armyStrength > owner.defenseStrength ? Math.min(200, owner.gold) : 0;
-        const skipSteal = isGoldBlocked(state, playerId);
         return {
           ...state,
           players: state.players.map(p => {
             if (p.id === playerId) {
-              return { ...p, position: best.spaceIndex, gold: skipSteal ? p.gold : p.gold + steal, lastDrawnCard: null };
+              return { ...p, position: best.spaceIndex, gold: p.gold + steal, lastDrawnCard: null };
             }
             if (p.id === best.ownerId) return { ...p, gold: Math.max(0, p.gold - steal) };
             return p;
@@ -824,21 +1062,21 @@ function gameReducer(state, action) {
         const spaceIndex = actor.position;
         return {
           ...state,
-          sealedSpaces: { ...(state.sealedSpaces || {}), [spaceIndex]: 1 },
+          sealedSpaces: { ...(state.sealedSpaces || {}), [spaceIndex]: state.players.length },
           players: state.players.map(p => (p.id === playerId ? { ...p, lastDrawnCard: null } : p)),
         };
       }
 
       if (cardId === 'd8') {
         const outer = (actor.ownedTerritories || []).filter(t => !t.startsWith('inner-'));
-        let bestSpace = null;
+        let bestSpace = null, bestPrice = -1;
         for (const tid of outer) {
           const t = state.territories[tid];
-          if (t?.ownerId === playerId && t.spaceIndex != null) { bestSpace = t.spaceIndex; break; }
+          if (t?.ownerId !== playerId || t.spaceIndex == null) continue;
+          const price = getOuterTerritoryDef(t.spaceIndex)?.price ?? 0;
+          if (price > bestPrice) { bestPrice = price; bestSpace = t.spaceIndex; }
         }
-        if (bestSpace == null) {
-          return { ...state, players: state.players.map(p => (p.id === playerId ? { ...p, lastDrawnCard: null } : p)) };
-        }
+        if (bestSpace == null) bestSpace = FACTION_TO_START_INDEX[actor.faction] ?? 0; // no outer territory: retreat to own START
         return {
           ...state,
           players: state.players.map(p =>
@@ -904,21 +1142,25 @@ function gameReducer(state, action) {
         if (!target || targetPlayerId === playerId) {
           return { ...state, players: state.players.map(p => (p.id === playerId ? { ...p, lastDrawnCard: null } : p)) };
         }
-        const shared = { [playerId]: { allyId: targetPlayerId, turnsLeft: 3 }, [targetPlayerId]: { allyId: playerId, turnsLeft: 3 } };
+        // Truce: neither player can attack the other for 3 of their own turns. Immunity ticks down at the
+        // start of its holder's turn, so the card player (whose turn this already is) gets 3 and the target 4.
+        const imm = state.attackImmunity || {};
         return {
           ...state,
-          alliances: { ...(state.alliances || {}), ...shared },
+          attackImmunity: {
+            ...imm,
+            [playerId]: { ...(imm[playerId] || {}), [targetPlayerId]: 3 },
+            [targetPlayerId]: { ...(imm[targetPlayerId] || {}), [playerId]: 4 },
+          },
           players: state.players.map(p => (p.id === playerId ? { ...p, lastDrawnCard: null } : p)),
         };
       }
 
       if (cardId === 'f8') {
-        const newPos = (actor.position + 5) % (totalSpaces || 1);
-        const skipF8 = isGoldBlocked(state, playerId);
         return {
           ...state,
           players: state.players.map(p =>
-            p.id === playerId ? { ...p, position: newPos, gold: skipF8 ? p.gold : p.gold + 100, lastDrawnCard: null } : p
+            p.id === playerId ? { ...p, gold: p.gold + 100, lastDrawnCard: null } : p
           ),
         };
       }
@@ -945,7 +1187,7 @@ function gameReducer(state, action) {
     case 'KEEP_DRAWN_CARD': {
       const keepPlayerId = state.players[state.currentPlayerIndex].id;
       const kept = state.players.find(p => p.id === keepPlayerId)?.lastDrawnCard;
-      if (!kept) return state;
+      if (!kept || kept.type !== 'fate' || !kept.keepable) return state; // drawn penalties can't be kept
       return {
         ...state,
         players: state.players.map(p => {
@@ -967,7 +1209,6 @@ function gameReducer(state, action) {
       if (card.type !== 'fate' || !card.effect) return state;
       const handAfter = fatePlayer.hand.filter((_, i) => i !== cardIndex);
       const fg = card.effect.gold || 0;
-      const skipFateGold = fg > 0 && isGoldBlocked(state, fatePlayerId);
       return {
         ...state,
         players: state.players.map(p => {
@@ -975,7 +1216,7 @@ function gameReducer(state, action) {
           return {
             ...p,
             hand: handAfter,
-            gold: skipFateGold ? p.gold : Math.max(0, p.gold + fg),
+            gold: Math.max(0, p.gold + fg),
             armyStrength: Math.max(0, Math.min(100, p.armyStrength + (card.effect.army || 0))),
             defenseStrength: Math.max(0, Math.min(100, p.defenseStrength + (card.effect.defense || 0))),
           };
@@ -1014,7 +1255,6 @@ function gameReducer(state, action) {
         };
       }
       const pg = card.effect.gold || 0;
-      const skipPenaltyGold = pg > 0 && isGoldBlocked(state, targetPlayerId);
       return {
         ...state,
         penaltyImmunity: nextPenaltyImmunity,
@@ -1024,12 +1264,33 @@ function gameReducer(state, action) {
           if (immune) return p;
           return {
             ...p,
-            gold: skipPenaltyGold ? p.gold : Math.max(0, p.gold + pg),
+            gold: Math.max(0, p.gold + pg),
             armyStrength: Math.max(0, Math.min(100, p.armyStrength + (card.effect.army || 0))),
             defenseStrength: Math.max(0, Math.min(100, p.defenseStrength + (card.effect.defense || 0))),
           };
         }),
       };
+    }
+
+    case 'OFFER_CARD_SALE': {
+      // The buyer must accept before any gold moves (RESPOND_CARD_SALE)
+      const { sellerId, buyerId, cardIndex, price = 100 } = action.payload;
+      const seller = state.players.find(p => p.id === sellerId);
+      const buyer = state.players.find(p => p.id === buyerId);
+      if (!seller || !buyer || sellerId === buyerId || buyer.gold < price) return state;
+      if (cardIndex < 0 || cardIndex >= (seller.hand?.length ?? 0)) return state;
+      return { ...state, cardSaleOffer: { sellerId, buyerId, cardIndex, price, card: seller.hand[cardIndex] } };
+    }
+
+    case 'RESPOND_CARD_SALE': {
+      const offer = state.cardSaleOffer;
+      if (!offer) return state;
+      const cleared = { ...state, cardSaleOffer: null };
+      if (!action.payload?.accept) return cleared;
+      const seller = state.players.find(p => p.id === offer.sellerId);
+      // The hand may have changed since the offer; make sure it's still the same card
+      if (seller?.hand?.[offer.cardIndex]?.id !== offer.card?.id) return cleared;
+      return baseReducer(cleared, { type: 'SELL_CARD', payload: offer });
     }
 
     case 'SELL_CARD': {
@@ -1040,11 +1301,10 @@ function gameReducer(state, action) {
       if (!seller || !buyer || buyer.gold < p || !seller.hand?.length || cardIndex < 0 || cardIndex >= seller.hand.length) return state;
       const card = seller.hand[cardIndex];
       const handAfter = seller.hand.filter((_, i) => i !== cardIndex);
-      const skipSellGold = isGoldBlocked(state, sellerId);
       return {
         ...state,
         players: state.players.map(pl => {
-          if (pl.id === sellerId) return { ...pl, hand: handAfter, gold: skipSellGold ? pl.gold : pl.gold + p };
+          if (pl.id === sellerId) return { ...pl, hand: handAfter, gold: pl.gold + p };
           if (pl.id === buyerId) return { ...pl, gold: pl.gold - p, hand: [...(pl.hand || []), { ...card }] };
           return pl;
         }),
@@ -1100,12 +1360,14 @@ function gameReducer(state, action) {
 
     case 'PAY_TRIBUTE': {
       const { fromPlayerId, toPlayerId, amount } = action.payload;
-      const skipTribute = isGoldBlocked(state, toPlayerId);
+      const payer = state.players.find(p => p.id === fromPlayerId);
+      if (!payer || fromPlayerId === toPlayerId) return state;
+      const paid = Math.max(0, Math.min(amount, payer.gold)); // receiver gets only what the payer actually has
       return {
         ...state,
         players: state.players.map(p => {
-          if (p.id === fromPlayerId) return { ...p, gold: Math.max(0, p.gold - amount) };
-          if (p.id === toPlayerId) return { ...p, gold: skipTribute ? p.gold : p.gold + amount };
+          if (p.id === fromPlayerId) return { ...p, gold: p.gold - paid };
+          if (p.id === toPlayerId) return { ...p, gold: p.gold + paid };
           return p;
         }),
       };
@@ -1136,7 +1398,6 @@ function gameReducer(state, action) {
       const mover = state.players.find(p => p.id === moverId);
       const owner = state.players.find(p => p.id === ownerId);
       if (!mover || !owner || mover.gold < amount) return state;
-      const skipOwnerGold = isGoldBlocked(state, ownerId);
       const land = state.landedOnStart;
       const nextLand = land ? { ...land, phase: 'post-bribe-fight' } : null;
       return {
@@ -1145,7 +1406,7 @@ function gameReducer(state, action) {
         landedOnStart: nextLand,
         players: state.players.map(p => {
           if (p.id === moverId) return { ...p, gold: p.gold - amount };
-          if (p.id === ownerId) return { ...p, gold: skipOwnerGold ? p.gold : p.gold + amount };
+          if (p.id === ownerId) return { ...p, gold: p.gold + amount };
           return p;
         }),
       };
@@ -1166,120 +1427,90 @@ function gameReducer(state, action) {
           bribePot: 0,
           combatSource: pl.combatSource ?? null,
           combatMode: pl.combatMode ?? null, // 'tactical' = Army+Defense for both
+          attackerBonus: pl.combatSource === 'gauntlet' ? (GAUNTLET_CHALLENGER_BONUS[state.players.length] ?? 0) : 0,
         },
       };
     }
 
-    case 'ROLL_COMBAT_DICE': {
-      if (!state.combatData) return state;
-      const currentAttacker = state.players.find(p => p.id === state.combatData.attackerId);
-      const currentDefender = state.players.find(p => p.id === state.combatData.defenderId);
-      if (!currentAttacker || !currentDefender) return state;
-
-      const tactical = state.combatData.combatMode === 'tactical';
-      const alliances = state.alliances || {};
-      const getEffectiveArmy = (pid) => {
-        const a = alliances[pid];
-        if (!a?.allyId) return state.players.find(p => p.id === pid)?.armyStrength ?? 0;
-        const pl = state.players.find(x => x.id === pid);
-        const ally = state.players.find(x => x.id === a.allyId);
-        return Math.max(pl?.armyStrength ?? 0, ally?.armyStrength ?? 0);
-      };
-      const atkArmy = getEffectiveArmy(state.combatData.attackerId);
-      const atkStat = tactical ? (currentAttacker.armyStrength ?? 0) + (currentAttacker.defenseStrength ?? 0) : atkArmy;
-      const defStat = tactical ? (currentDefender.armyStrength ?? 0) + (currentDefender.defenseStrength ?? 0) : (currentDefender.defenseStrength ?? 0);
-
-      let atkDie1, atkDie2, atkRoll;
-      let defDie1, defDie2, defRoll;
-      let atkTotalRolled, defTotalRolled;
-      const atkCardBonus = 0;
-      const defCardBonus = 0;
-
-      for (let i = 0; i < 50; i++) {
-        atkDie1 = rollD6();
-        atkDie2 = rollD6();
-        atkRoll = atkDie1 + atkDie2;
-        defDie1 = rollD6();
-        defDie2 = rollD6();
-        defRoll = defDie1 + defDie2;
-        atkTotalRolled = atkRoll + atkStat + atkCardBonus + (state.combatData.attackerBribe || 0);
-        defTotalRolled = defRoll + defStat + defCardBonus + (state.combatData.defenderBribe || 0);
-        if (atkTotalRolled !== defTotalRolled) break;
-      }
-
-      return {
-        ...state,
-        combatData: {
-          ...state.combatData,
-          diceRolled: true,
-          attackerRoll: atkRoll,
-          defenderRoll: defRoll,
-          attackerDice: [atkDie1, atkDie2],
-          defenderDice: [defDie1, defDie2],
-          attackerTotal: atkTotalRolled,
-          defenderTotal: defTotalRolled,
-        },
-      };
-    }
-
-    case 'ADD_COMBAT_BRIBE':
+    case 'ADD_COMBAT_BRIBE': {
       const { playerId: bribePlayerId } = action.payload;
-      if (!state.combatData) return state;
-      
+      if (!state.combatData || state.combatData.diceRolled) return state; // bribes close once dice are rolled
+
       const bribePlayer = state.players.find(p => p.id === bribePlayerId);
       if (!bribePlayer || bribePlayer.gold < GAUNTLET_BRIBE_COST) return state;
-      
+
       const updatedCombatData = { ...state.combatData };
-      const gauntletUnlimitedBribe = state.combatData.combatSource === 'gauntlet';
-      const MAX_BRIBES = gauntletUnlimitedBribe ? Infinity : 3;
-      
-      let currentBribeCount = 0;
+      const MAX_BRIBES = state.combatData.combatSource === 'gauntlet' ? Infinity : 3;
+
       if (bribePlayerId === updatedCombatData.attackerId) {
-        currentBribeCount = updatedCombatData.attackerBribe || 0;
-        if (currentBribeCount >= MAX_BRIBES) return state;
-        updatedCombatData.attackerBribe = currentBribeCount + 1;
+        const count = updatedCombatData.attackerBribe || 0;
+        if (count >= MAX_BRIBES) return state;
+        updatedCombatData.attackerBribe = count + 1;
       } else if (bribePlayerId === updatedCombatData.defenderId) {
-        currentBribeCount = updatedCombatData.defenderBribe || 0;
-        if (currentBribeCount >= MAX_BRIBES) return state;
-        updatedCombatData.defenderBribe = currentBribeCount + 1;
+        const count = updatedCombatData.defenderBribe || 0;
+        if (count >= MAX_BRIBES) return state;
+        updatedCombatData.defenderBribe = count + 1;
+      } else {
+        return state; // not a participant
       }
 
       updatedCombatData.bribePot = (updatedCombatData.bribePot || 0) + GAUNTLET_BRIBE_COST;
-      const bribeUpdatedPlayers = state.players.map(p =>
-        p.id === bribePlayerId ? { ...p, gold: p.gold - GAUNTLET_BRIBE_COST } : p
-      );
-      
       return {
         ...state,
         combatData: updatedCombatData,
-        players: bribeUpdatedPlayers,
+        players: state.players.map(p =>
+          p.id === bribePlayerId ? { ...p, gold: p.gold - GAUNTLET_BRIBE_COST } : p
+        ),
       };
+    }
 
-    case 'RESOLVE_COMBAT':
-      const combatPayload = action.payload;
-      const { attackerId: atkId, defenderId: defId, territoryId: combatTid, attackerTotal: atkTotal, defenderTotal: defTotal, attackerBribe: atkBribe, defenderBribe: defBribe } = combatPayload;
+    // Rolls and resolves a combat in one step. payload.rolls: pre-rolled [a1, a2, d1, d2] candidates
+    // (randomness stays outside the reducer); the first non-tied candidate is used ("all ties require a reroll").
+    // The modal stays open (combatActive true) until END_COMBAT / the gauntlet flow closes it.
+    case 'RESOLVE_COMBAT': {
+      const cd = state.combatData;
+      if (!cd || cd.diceRolled || cd.winner != null) return state; // never resolve twice
+      const stats = getCombatStats(state, cd);
+      if (!stats) return state;
+      const { atkStat, defStat } = stats;
+      const rolls = action.payload?.rolls || [];
+      if (rolls.length === 0) return state;
+
+      let chosen = rolls[rolls.length - 1];
+      for (const r of rolls) {
+        const a = r[0] + r[1] + atkStat + (cd.attackerBribe || 0);
+        const d = r[2] + r[3] + defStat + (cd.defenderBribe || 0);
+        if (a !== d) { chosen = r; break; }
+      }
+      const [atkDie1, atkDie2, defDie1, defDie2] = chosen;
+      const atkRoll = atkDie1 + atkDie2;
+      const defRoll = defDie1 + defDie2;
+      const atkTotal = atkRoll + atkStat + (cd.attackerBribe || 0);
+      const defTotal = defRoll + defStat + (cd.defenderBribe || 0);
+      const atkId = cd.attackerId;
+      const defId = cd.defenderId;
+      const combatTid = cd.territoryId;
       const difference = Math.abs(atkTotal - defTotal);
-      const attackerWins = atkTotal > defTotal;
-      const isGauntlet = combatPayload.combatSource === 'gauntlet';
+      const attackerWins = atkTotal > defTotal; // an unbroken tie (50 straight) goes to the defender
+      const isGauntlet = cd.combatSource === 'gauntlet';
+      const winnerId = attackerWins ? atkId : defId;
+      const loserId = attackerWins ? defId : atkId;
+      const bribePot = cd.bribePot || 0;
 
       let postCombatPlayers = state.players;
       let newTerritories = state.territories;
       let newBoardSpaces = state.boardSpaces;
       let nextReverseUntilBattleWin = state.reverseUntilBattleWin;
 
+      let goldPayment = 0;
+      let decisiveSteal = null;
       if (!isGauntlet) {
-        const goldPayment = difference * 10;
-        const bribePot = combatPayload.bribePot || 0;
-        const winnerId = attackerWins ? atkId : defId;
-        const skipCombatGold = isGoldBlocked(state, winnerId);
+        // Loser pays difference × 10, capped at what they actually have (no gold from nowhere)
+        const loserGold = state.players.find(p => p.id === loserId)?.gold ?? 0;
+        goldPayment = Math.min(difference * 10, Math.max(0, loserGold));
         postCombatPlayers = postCombatPlayers.map(p => {
-          if (attackerWins) {
-            if (p.id === atkId) return { ...p, gold: skipCombatGold ? p.gold : p.gold + goldPayment + bribePot };
-            if (p.id === defId) return { ...p, gold: Math.max(0, p.gold - goldPayment) };
-          } else {
-            if (p.id === defId) return { ...p, gold: skipCombatGold ? p.gold : p.gold + goldPayment + bribePot };
-            if (p.id === atkId) return { ...p, gold: Math.max(0, p.gold - goldPayment) };
-          }
+          if (p.id === winnerId) return { ...p, gold: p.gold + goldPayment + bribePot };
+          if (p.id === loserId) return { ...p, gold: p.gold - goldPayment };
           return p;
         });
 
@@ -1304,27 +1535,50 @@ function gameReducer(state, action) {
         }
 
         nextReverseUntilBattleWin = { ...(state.reverseUntilBattleWin || {}) };
-        const ruwWinner = attackerWins ? atkId : defId;
-        if (ruwWinner) delete nextReverseUntilBattleWin[ruwWinner];
+        delete nextReverseUntilBattleWin[winnerId];
+
+        // Decisive victory (win by 5+): the winner takes 1 point of the loser's stronger stat
+        if (difference >= 5) {
+          const loser = postCombatPlayers.find(p => p.id === loserId);
+          const stat = (loser?.armyStrength ?? 0) >= (loser?.defenseStrength ?? 0) ? 'armyStrength' : 'defenseStrength';
+          if ((loser?.[stat] ?? 0) > 0) {
+            decisiveSteal = { stat: stat === 'armyStrength' ? 'army' : 'defense', amount: 1 };
+            postCombatPlayers = postCombatPlayers.map(p => {
+              if (p.id === loserId) return { ...p, [stat]: p[stat] - 1 };
+              if (p.id === winnerId) return { ...p, [stat]: Math.min(100, (p[stat] ?? 0) + 1) };
+              return p;
+            });
+          }
+        }
       }
 
-      const combatWinnerId = attackerWins ? atkId : defId;
       return {
         ...state,
         players: postCombatPlayers,
         territories: newTerritories,
         boardSpaces: newBoardSpaces,
         reverseUntilBattleWin: nextReverseUntilBattleWin,
-        combatActive: isGauntlet ? true : false,
+        combatActive: true,
         combatData: {
-          ...combatPayload,
-          winner: combatWinnerId,
-          loser: attackerWins ? defId : atkId,
+          ...cd,
+          diceRolled: true,
+          attackerRoll: atkRoll,
+          defenderRoll: defRoll,
+          attackerDice: [atkDie1, atkDie2],
+          defenderDice: [defDie1, defDie2],
+          attackerStat: atkStat,
+          defenderStat: defStat,
+          attackerTotal: atkTotal,
+          defenderTotal: defTotal,
+          winner: winnerId,
+          loser: loserId,
           difference,
-          goldPayment: isGauntlet ? 0 : difference * 10,
-          bribePot: combatPayload.bribePot || 0,
+          goldPayment,
+          decisiveSteal,
+          bribePot,
         },
       };
+    }
 
     case 'END_COMBAT':
       return {
@@ -1385,99 +1639,19 @@ function gameReducer(state, action) {
       return state;
 
     case 'NEXT_TURN': {
-      const nextIndex = (state.currentPlayerIndex + 1) % state.players.length;
-      const newCurrentPlayerId = state.players[nextIndex].id;
-      const newAttackedPlayers = { ...state.attackedPlayers };
-      if (!newAttackedPlayers[newCurrentPlayerId]) newAttackedPlayers[newCurrentPlayerId] = [];
-
-      let nextRound = state.currentRound ?? 0;
-      let nextTollBooths = { ...(state.tollBooths || {}) };
-      let nextSealed = { ...(state.sealedSpaces || {}) };
-      if (nextIndex === 0 && state.players.length > 0) {
-        nextRound++;
-        for (const [ownerId, toll] of Object.entries(nextTollBooths)) {
-          const left = (toll.roundsLeft ?? 0) - 1;
-          if (left <= 0) delete nextTollBooths[ownerId];
-          else nextTollBooths[ownerId] = { ...toll, roundsLeft: left };
-        }
-        const nextSealedNew = {};
-        for (const [spaceIdx, roundsLeft] of Object.entries(nextSealed)) {
-          const left = (roundsLeft ?? 0) - 1;
-          if (left > 0) nextSealedNew[spaceIdx] = left;
-        }
-        nextSealed = nextSealedNew;
-      }
-
-      let nextImmunity = { ...(state.attackImmunity || {}) };
-      const immForNew = nextImmunity[newCurrentPlayerId];
-      if (immForNew && typeof immForNew === 'object') {
-        const next = { ...immForNew };
-        for (const [defId, turns] of Object.entries(next)) {
-          const t = (turns ?? 0) - 1;
-          if (t <= 0) delete next[defId];
-          else next[defId] = t;
-        }
-        if (Object.keys(next).length === 0) delete nextImmunity[newCurrentPlayerId];
-        else nextImmunity[newCurrentPlayerId] = next;
-      }
-
-      const leavingPlayerId = state.players[state.currentPlayerIndex]?.id;
-      const nextCannotMove = { ...(state.cannotMoveNextTurn || {}) };
-      if (leavingPlayerId) delete nextCannotMove[leavingPlayerId];
-
-      let nextAlliances = { ...(state.alliances || {}) };
-      const allyEntry = nextAlliances[newCurrentPlayerId];
-      if (allyEntry && allyEntry.allyId != null) {
-        const left = (allyEntry.turnsLeft ?? 0) - 1;
-        const allyId = allyEntry.allyId;
-        if (left <= 0) {
-          delete nextAlliances[newCurrentPlayerId];
-          delete nextAlliances[allyId];
-        } else {
-          nextAlliances[newCurrentPlayerId] = { ...allyEntry, turnsLeft: left };
-          if (nextAlliances[allyId]) nextAlliances[allyId] = { ...nextAlliances[allyId], turnsLeft: left };
-        }
-      }
-
-      let nextCannotBuy = { ...(state.cannotBuyTerritories || {}) };
-      const buyTurns = leavingPlayerId != null ? nextCannotBuy[leavingPlayerId] : undefined;
-      if (buyTurns != null) {
-        const left = (buyTurns ?? 0) - 1;
-        if (left <= 0) delete nextCannotBuy[leavingPlayerId];
-        else nextCannotBuy[leavingPlayerId] = left;
-      }
-
-      const nextTurnSummaries = { ...(state.aiTurnSummaryByPlayerId || {}) };
-      if (leavingPlayerId != null && action.payload?.turnSummary != null) {
-        nextTurnSummaries[leavingPlayerId] = action.payload.turnSummary;
-      }
-
-      return {
-        ...state,
-        currentPlayerIndex: nextIndex,
-        diceRoll: null,
-        doublesBonusUsed: false,
-        doublesExtraRollAvailable: false,
-        attackedPlayers: newAttackedPlayers,
-        currentRound: nextRound,
-        tollBooths: nextTollBooths,
-        sealedSpaces: nextSealed,
-        attackImmunity: nextImmunity,
-        cannotMoveNextTurn: nextCannotMove,
-        alliances: nextAlliances,
-        cannotBuyTerritories: nextCannotBuy,
-        selectedCorner: null,
-        selectedTerritory: null,
-        pendingIncomeTypeSelection: null,
-        drewCardFromLandingThisTurn: false,
-        aiTurnSummaryByPlayerId: nextTurnSummaries,
-      };
+      // Ignore stale requests (e.g. a delayed auto-advance that fires after the turn already moved on)
+      const expected = action.payload?.expectedTurn;
+      if (expected != null && expected !== (state.turnNumber ?? 0)) return state;
+      if (state.movingPlayerId != null) return state; // never end a turn mid-move
+      if (!state.players.length) return state;
+      return applyNextTurn(state, action.payload);
     }
 
     case 'ATTACK_PLAYER':
       const { attackerId: attackAtkId, defenderId: attackDefId } = action.payload;
       return {
         ...state,
+        attackedThisTurn: true, // attacking replaces the roll this turn
         attackedPlayers: {
           ...state.attackedPlayers,
           [attackAtkId]: [...(state.attackedPlayers[attackAtkId] || []), attackDefId],
@@ -1498,13 +1672,12 @@ function gameReducer(state, action) {
       const sellTerritory = state.territories[sellTerritoryId];
       if (!sellTerritory) return state;
       const sellSpaceIndex = sellTerritory.spaceIndex;
-      const sellPrice = 150;
+      const sellPrice = getTerritorySalePrice(state, sellTerritoryId);
       const sellTerritories = { ...state.territories };
       delete sellTerritories[sellTerritoryId];
       const spaceToSell = state.boardSpaces[sellSpaceIndex];
       const originalSpaceType = spaceToSell?.originalType || 'New Territory';
       const originalLabel = spaceToSell?.originalLabel || 'New Territory';
-      const skipSellTerr = isGoldBlocked(state, sellTerritory.ownerId);
       return {
         ...state,
         territories: sellTerritories,
@@ -1515,7 +1688,7 @@ function gameReducer(state, action) {
         ),
         players: state.players.map(p =>
           p.id === sellTerritory.ownerId
-            ? { ...p, gold: skipSellTerr ? p.gold : p.gold + sellPrice, ownedTerritories: p.ownedTerritories.filter(t => t !== sellTerritoryId) }
+            ? { ...p, gold: p.gold + sellPrice, ownedTerritories: p.ownedTerritories.filter(t => t !== sellTerritoryId) }
             : p
         ),
       };
@@ -1561,27 +1734,11 @@ function gameReducer(state, action) {
       const { playerId: collectPlayerId } = action.payload;
       const collectPlayer = state.players.find(p => p.id === collectPlayerId);
       if (!collectPlayer) return state;
-      const territories = collectPlayer.ownedTerritories ?? [];
-      const innerTerritories = territories.filter(t => t.startsWith('inner-'));
-      const outerTerritories = territories.filter(t => !t.startsWith('inner-'));
-      const outerIncome = outerTerritories.length * 100;
-      const innerIncome = innerTerritories.reduce((sum, tid) => {
-        const territory = state.territories[tid];
-        const tIncomeType = territory?.incomeType;
-        if (!tIncomeType) return sum;
-        const statPercentage = tIncomeType === 'army' ? collectPlayer.armyStrength : collectPlayer.defenseStrength;
-        return sum + (statPercentage * 0.01);
-      }, 0);
-      const income = Math.round(100 + outerIncome + innerIncome);
-      const skipGold = isGoldBlocked(state, collectPlayerId);
+      const income = computeStartIncome(state, collectPlayer);
       return {
         ...state,
-        players: state.players.map(p =>
-          p.id === collectPlayerId ? { ...p, gold: skipGold ? p.gold : p.gold + income } : p
-        ),
-        ...(!skipGold && {
-          incomeNotification: { playerId: collectPlayerId, amount: income, statType: collectPlayer.incomeType },
-        }),
+        players: payStartIncome(state.players, collectPlayerId, income),
+        incomeNotification: { playerId: collectPlayerId, amount: income.gold, outerCount: income.outerCount, army: income.army, defense: income.defense, debt: getBankDebt(state, collectPlayerId) },
       };
     }
 
@@ -1686,37 +1843,22 @@ function gameReducer(state, action) {
     }
 
     case 'GAUNTLET_DEFEAT': {
+      // Either/or (rulebook): a target who owns an outer territory may sacrifice one to stay and retry;
+      // otherwise they're kicked out (lose an inner territory, back to START) and the turn ends.
       const g = state.gauntlet;
       if (!g) return state;
       const target = state.players.find(p => p.id === g.targetId);
       if (!target) return state;
-      const inners = INNER_BY_FACTION[target.faction];
-      const toRelock = (inners && inners.find((id) => (target.ownedTerritories || []).includes(id))) || null;
-      let nextTerritories = { ...state.territories };
-      let nextPlayers = state.players.map((p) => {
-        if (p.id !== g.targetId) return p;
-        const startIndex = FACTION_TO_START_INDEX[p.faction] ?? 0;
-        let owned = [...(p.ownedTerritories || [])];
-        if (toRelock) {
-          owned = owned.filter((t) => t !== toRelock);
-        }
-        return { ...p, position: startIndex, ownedTerritories: owned };
-      });
-      if (toRelock) delete nextTerritories[toRelock];
-      const outer = (target.ownedTerritories || []).filter((t) => !t.startsWith('inner-'));
-      const hasOuter = outer.length > 0;
-      return {
-        ...state,
-        players: nextPlayers,
-        territories: nextTerritories,
-        combatActive: false,
-        combatData: null,
-        gauntlet: hasOuter
-          ? { ...g, phase: 'sacrifice_prompt' }
-          : null,
-        gamePhase: hasOuter ? 'gauntlet' : 'playing',
-        ...(!hasOuter && { castleState: 'ruins' }),
-      };
+      const hasOuter = (target.ownedTerritories || []).some((t) => !t.startsWith('inner-'));
+      if (hasOuter) {
+        return {
+          ...state,
+          combatActive: false,
+          combatData: null,
+          gauntlet: { ...g, phase: 'sacrifice_prompt' },
+        };
+      }
+      return kickOutOfGauntlet(state, action.payload);
     }
 
     case 'GAUNTLET_SACRIFICE_TERRITORY': {
@@ -1751,14 +1893,8 @@ function gameReducer(state, action) {
     }
 
     case 'GAUNTLET_DECLINE_SACRIFICE': {
-      const g = state.gauntlet;
-      if (!g) return state;
-      return {
-        ...state,
-        gauntlet: null,
-        gamePhase: 'playing',
-        castleState: 'ruins',
-      };
+      if (!state.gauntlet) return state;
+      return kickOutOfGauntlet(state, action.payload);
     }
 
     default:
@@ -1809,7 +1945,7 @@ function getActionTurnSummary(action, before, state) {
     case 'ATTACK_PLAYER':
       return 'Attacked territory';
     case 'RESOLVE_COMBAT': {
-      const winnerId = p?.winnerId;
+      const winnerId = state?.combatData?.winner;
       const currentId = before?.players?.[before?.currentPlayerIndex]?.id;
       if (winnerId === currentId) return 'Won combat';
       if (p?.attackerId === currentId || p?.defenderId === currentId) return 'Lost combat';
@@ -1837,6 +1973,96 @@ function getActionTurnSummary(action, before, state) {
   }
 }
 
+/** Players, board and decks for a new game (pure; used by initializeGame and tests). */
+export function buildGamePayload(playerCount, selectedFactions = null, options = {}) {
+  // Default faction order: King (top-left), Dragon (top-right), Knight (bottom-left), Wizard (bottom-right)
+  const defaultFactionOrder = ['KING', 'DRAGON', 'KNIGHT', 'WIZARD'];
+  const factionOrder = selectedFactions || defaultFactionOrder.slice(0, playerCount);
+  
+  // Map factions to their corner positions (must match GameBoard getPosition)
+  const factionToCorner = {
+    'KING': 0,    // top-left
+    'DRAGON': 11, // top-right
+    'KNIGHT': 31, // bottom-left
+    'WIZARD': 20, // bottom-right
+  };
+  
+  const players = Array.from({ length: playerCount }, (_, i) => {
+    const factionKey = factionOrder[i] || defaultFactionOrder[i];
+    const faction = FACTIONS[factionKey];
+    const cornerPosition = factionToCorner[factionKey] || 0;
+    
+    return {
+      id: `player-${i}`,
+      name: faction.name,
+      faction: faction.id,
+      icon: faction.icon,
+      color: faction.color,
+      position: cornerPosition, // Starting positions at corners based on faction
+      gold: faction.startGold,
+      armyStrength: faction.startArmy,
+      defenseStrength: faction.startDefense,
+      ownedTerritories: [],
+      hand: [], // Kept fate/penalty cards: { id, type, text, effect, keepable }
+      lastDrawnCard: null,
+      incomeType: null, // 'army' or 'defense' - chosen when first inner territory is purchased
+      isAI: !!(options?.aiPlayers && options.aiPlayers[i]),
+    };
+  });
+
+  // Create board spaces (40 spaces total for a perimeter track)
+  // Board is 12 spaces wide, 10 spaces tall
+  // Corners: 0 (top-left), 11 (top-right), 20 (bottom-right), 31 (bottom-left)
+  const boardSpaces = [];
+  const spaceTypes = [
+    SPACE_TYPES.RESOURCE_CARD,
+    SPACE_TYPES.ARMY_CARD,
+    SPACE_TYPES.DEFENSE_CARD,
+    SPACE_TYPES.FATE_CARD,
+    SPACE_TYPES.PENALTY_CARD,
+    SPACE_TYPES.NEW_TERRITORY,
+  ];
+  
+  const cornerIndices = [0, 11, 31, 20]; // All four corners: top-left, top-right, bottom-right, bottom-left
+  
+  for (let i = 0; i < 40; i++) {
+    if (cornerIndices.includes(i)) {
+      boardSpaces.push({ id: i, type: SPACE_TYPES.START, label: 'START', originalType: SPACE_TYPES.START, originalLabel: 'START', owned: false });
+    } else {
+      const typeIndex = (i - 1) % spaceTypes.length;
+      const spaceType = spaceTypes[typeIndex];
+      const territoryDefIdx = NEW_TERRITORY_SPACE_INDICES.indexOf(i);
+      const territoryDef = territoryDefIdx >= 0 ? OUTER_TERRITORY_DEFS[territoryDefIdx] : null;
+      boardSpaces.push({ 
+        id: i, 
+        type: spaceType, 
+        label: territoryDef ? territoryDef.name : spaceType, 
+        originalType: spaceType, 
+        originalLabel: territoryDef ? territoryDef.name : spaceType,
+        owned: false,
+        ...(territoryDef && {
+          name: territoryDef.name,
+          price: territoryDef.price,
+          bribe: territoryDef.bribe,
+          backgroundImage: territoryDef.backgroundImage,
+        }),
+      });
+    }
+  }
+
+  // Initialize card decks with placeholder cards
+  const cardDecks = {
+    resource: generateResourceCards(),
+    army: generateArmyCards(),
+    defense: generateDefenseCards(),
+    fate: generateFateCards(),
+    penalty: generatePenaltyCards(),
+    territory: generateTerritoryCards(),
+  };
+
+  return { players, boardSpaces, cardDecks, testingMode: !!options?.testingMode };
+}
+
 // Create Context
 const GameContext = createContext();
 
@@ -1850,6 +2076,10 @@ export function GameProvider({ children }) {
   const movingPlayerIdRef = useRef(null);
   /** Accumulated summary chunks for the current human player's turn (for analytics). */
   const humanTurnSummaryRef = useRef([]);
+  /** finishCombat is defined before handleGauntletClose; reach it through a ref */
+  const handleGauntletCloseRef = useRef(null);
+  /** requestEnterBlueRuin's animation fallback calls the (later-defined) entry handler through this */
+  const gauntletEntryCompleteRef = useRef(null);
 
   const recorderRef = useRef(null);
   if (!recorderRef.current) {
@@ -1884,7 +2114,11 @@ export function GameProvider({ children }) {
 
     lastStateBeforeRef.current = null;
     lastActionRef.current = null;
-    recorder.recordAction(action, before, state);
+    // Combat results are computed in the reducer; attach them so the action trail / analytics page can read them
+    const recordedAction = action.type === 'RESOLVE_COMBAT' && state.combatData
+      ? { ...action, payload: { ...state.combatData } }
+      : action;
+    recorder.recordAction(recordedAction, before, state);
     if (action.type === 'NEXT_TURN') {
       const turnSummary =
         action.payload?.turnSummary ??
@@ -1922,95 +2156,7 @@ export function GameProvider({ children }) {
   }, []);
 
   const initializeGame = useCallback((playerCount, selectedFactions = null, options = {}) => {
-    // Default faction order: King (top-left), Dragon (top-right), Knight (bottom-left), Wizard (bottom-right)
-    const defaultFactionOrder = ['KING', 'DRAGON', 'KNIGHT', 'WIZARD'];
-    const factionOrder = selectedFactions || defaultFactionOrder.slice(0, playerCount);
-    
-    // Map factions to their corner positions (must match GameBoard getPosition)
-    const factionToCorner = {
-      'KING': 0,    // top-left
-      'DRAGON': 11, // top-right
-      'KNIGHT': 32, // bottom-left
-      'WIZARD': 21, // bottom-right
-    };
-    
-    const players = Array.from({ length: playerCount }, (_, i) => {
-      const factionKey = factionOrder[i] || defaultFactionOrder[i];
-      const faction = FACTIONS[factionKey];
-      const cornerPosition = factionToCorner[factionKey] || 0;
-      
-      return {
-        id: `player-${i}`,
-        name: faction.name,
-        faction: faction.id,
-        icon: faction.icon,
-        color: faction.color,
-        position: cornerPosition, // Starting positions at corners based on faction
-        gold: faction.startGold,
-        armyStrength: faction.startArmy,
-        defenseStrength: faction.startDefense,
-        ownedTerritories: [],
-        hand: [], // Kept fate/penalty cards: { id, type, text, effect, keepable }
-        lastDrawnCard: null,
-        incomeType: null, // 'army' or 'defense' - chosen when first inner territory is purchased
-        isAI: !!(options?.aiPlayers && options.aiPlayers[i]),
-      };
-    });
-
-    // Create board spaces (41 spaces total for a perimeter track)
-    // Board is 12 spaces wide, 10 spaces tall
-    // Corners: 0 (top-left), 11 (top-right), 21 (bottom-right), 32 (bottom-left)
-    const boardSpaces = [];
-    const spaceTypes = [
-      SPACE_TYPES.RESOURCE_CARD,
-      SPACE_TYPES.ARMY_CARD,
-      SPACE_TYPES.DEFENSE_CARD,
-      SPACE_TYPES.FATE_CARD,
-      SPACE_TYPES.PENALTY_CARD,
-      SPACE_TYPES.NEW_TERRITORY,
-    ];
-    
-    const cornerIndices = [0, 11, 32, 21]; // All four corners: top-left, top-right, bottom-right, bottom-left
-    
-    for (let i = 0; i < 41; i++) {
-      if (cornerIndices.includes(i)) {
-        boardSpaces.push({ id: i, type: SPACE_TYPES.START, label: 'START', originalType: SPACE_TYPES.START, originalLabel: 'START', owned: false });
-      } else {
-        const typeIndex = (i - 1) % spaceTypes.length;
-        const spaceType = spaceTypes[typeIndex];
-        const territoryDefIdx = NEW_TERRITORY_SPACE_INDICES.indexOf(i);
-        const territoryDef = territoryDefIdx >= 0 ? OUTER_TERRITORY_DEFS[territoryDefIdx] : null;
-        boardSpaces.push({ 
-          id: i, 
-          type: spaceType, 
-          label: territoryDef ? territoryDef.name : spaceType, 
-          originalType: spaceType, 
-          originalLabel: territoryDef ? territoryDef.name : spaceType,
-          owned: false,
-          ...(territoryDef && {
-            name: territoryDef.name,
-            price: territoryDef.price,
-            bribe: territoryDef.bribe,
-            backgroundImage: territoryDef.backgroundImage,
-          }),
-        });
-      }
-    }
-
-    // Initialize card decks with placeholder cards
-    const cardDecks = {
-      resource: generateResourceCards(),
-      army: generateArmyCards(),
-      defense: generateDefenseCards(),
-      fate: generateFateCards(),
-      penalty: generatePenaltyCards(),
-      territory: generateTerritoryCards(),
-    };
-
-    dispatch({
-      type: 'INITIALIZE_GAME',
-      payload: { players, boardSpaces, cardDecks, testingMode: !!options?.testingMode },
-    });
+    dispatch({ type: 'INITIALIZE_GAME', payload: buildGamePayload(playerCount, selectedFactions, options) });
   }, []);
 
   const rollDice = useCallback(() => {
@@ -2043,7 +2189,30 @@ export function GameProvider({ children }) {
     });
   }, []);
 
-  const handleSpaceAction = useCallback((space) => {
+  // Helper function to check if player has nearby attackable players
+  const hasAttackablePlayers = useCallback((player, allPlayers, boardSpaces, attackedPlayersList, isCombatActive, attackImmunityMap = {}) =>
+    hasAttackableTargets(player, allPlayers, boardSpaces, attackedPlayersList, isCombatActive, attackImmunityMap), []);
+
+  const currentTurnSummary = () =>
+    (humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn');
+
+  // Auto-advance a human turn once everything is resolved. The NEXT_TURN carries the turn number it was
+  // scheduled for, so a late or duplicate call can never skip the following player.
+  const checkAndAdvanceTurn = useCallback(() => {
+    const st = stateRef.current;
+    const cp = st.players[st.currentPlayerIndex];
+    // AI turns are ended by the AI state machine (useAITurn)
+    if (!cp || cp.isAI || st.gamePhase !== 'playing') return;
+    if (!isTurnComplete(st)) return;
+    const expectedTurn = st.turnNumber ?? 0;
+    setTimeout(() => {
+      const now = stateRef.current;
+      if ((now.turnNumber ?? 0) !== expectedTurn || !isTurnComplete(now)) return;
+      dispatch({ type: 'NEXT_TURN', payload: { turnSummary: currentTurnSummary(), expectedTurn } });
+    }, 500); // Small delay to allow UI to update
+  }, []);
+
+  const handleSpaceAction = useCallback((space, { excludeCardIds = [] } = {}) => {
     if (space.type === SPACE_TYPES.NEW_TERRITORY) {
       dispatch({ type: 'SELECT_TERRITORY', payload: space.id });
       return;
@@ -2066,64 +2235,15 @@ export function GameProvider({ children }) {
       if (currentPlayer?.lastDrawnCard) return;
       if (deckType === 'resource' && currentPlayer && (st.goldBlockedUntilPayoff || {})[currentPlayer.id]) {
         dispatch({ type: 'PAY_OFF_GOLD_BLOCK', payload: { playerId: currentPlayer.id } });
+        setTimeout(() => checkAndAdvanceTurn(), 100);
+        return; // no card this landing — whether or not the debt cleared
       }
-      const deck = st.cardDecks[deckType];
-      const idx = deck?.length > 0 ? randomInt(deck.length) : 0;
-      dispatch({ type: 'DRAW_CARD', payload: { deckType, randomIndex: idx } });
+      const deck = st.cardDecks[deckType]?.length ? st.cardDecks[deckType] : getFreshDeckForType(deckType);
+      const drawableCount = deck.filter((c) => !excludeCardIds.includes(c.id)).length;
+      const idx = drawableCount > 0 ? randomInt(drawableCount) : 0;
+      dispatch({ type: 'DRAW_CARD', payload: { deckType, randomIndex: idx, excludeCardIds } });
     }
-  }, []);
-
-  // Helper function to check if player has nearby attackable players
-  const hasAttackablePlayers = useCallback((player, allPlayers, boardSpaces, attackedPlayersList, isCombatActive, attackImmunityMap = {}) => {
-    if (!player || isCombatActive) return false;
-    const totalSpaces = boardSpaces.length;
-    const currentPlayerAttacked = attackedPlayersList[player.id] || [];
-    const myImmunity = attackImmunityMap[player.id] || {};
-    
-    return allPlayers.some(p => {
-      if (p.id === player.id || currentPlayerAttacked.includes(p.id)) return false;
-      if ((myImmunity[p.id] ?? 0) > 0) return false; // r8: cannot attack for 2 turns
-      
-      const forwardDistance = (p.position - player.position + totalSpaces) % totalSpaces;
-      const isBehind = forwardDistance > 0 && forwardDistance <= 3;
-      return isBehind;
-    });
-  }, []);
-
-  // Helper function to check if turn is complete and auto-advance
-  const checkAndAdvanceTurn = useCallback(() => {
-    const currentState = stateRef.current;
-    const currentPlayer = currentState.players[currentState.currentPlayerIndex];
-    
-    // For AI turns, the AI state machine (useAITurn) controls when NEXT_TURN is dispatched.
-    // Avoid auto-advancing here to prevent double turn advances and out-of-sync AI behaviour.
-    if (currentPlayer?.isAI) {
-      return;
-    }
-
-    const hasPendingAction = currentState.selectedTerritory !== null || 
-                             currentPlayer?.lastDrawnCard !== null ||
-                             hasAttackablePlayers(currentPlayer, currentState.players, currentState.boardSpaces, currentState.attackedPlayers, currentState.combatActive, currentState.attackImmunity);
-    
-    // Don't advance turn if player has a doubles bonus roll available
-    const hasDoublesBonusPending = currentState.doublesExtraRollAvailable && !currentState.doublesBonusUsed;
-    
-    // If no pending actions, dice roll is cleared, no doubles bonus pending, and no combat, advance turn
-    if (!hasPendingAction && currentState.diceRoll === null && !currentState.combatActive && !hasDoublesBonusPending) {
-      const summary = humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn';
-      setTimeout(() => {
-        dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
-      }, 500); // Small delay to allow UI to update
-    }
-  }, [hasAttackablePlayers]);
-
-  // Helper function to calculate card bonus (% cards that add to combat)
-  // For now, we'll assume card bonuses are already in armyStrength/defenseStrength
-  const calculateCardBonus = useCallback((player) => {
-    // This would sum up % bonuses from cards if we had a card inventory
-    // For now, return 0 as cards modify stats directly
-    return 0;
-  }, []);
+  }, [checkAndAdvanceTurn]);
 
   const startCombat = useCallback((attackerId, defenderId, territoryId = null, combatSource = null, combatMode = null) => {
     const currentState = stateRef.current;
@@ -2136,21 +2256,33 @@ export function GameProvider({ children }) {
     });
   }, []);
 
-  // Roll dice for combat (after bribes have been added)
+  // Roll and resolve combat (after bribes). Dice are rolled here, outside the reducer; the reducer
+  // takes the first candidate that isn't a tie ("all ties require a reroll").
   const rollCombatDice = useCallback(() => {
-    dispatch({ type: 'ROLL_COMBAT_DICE' });
+    const cd = stateRef.current.combatData;
+    if (!cd || cd.diceRolled) return;
+    const rolls = Array.from({ length: 50 }, () => [rollD6(), rollD6(), rollD6(), rollD6()]);
+    dispatch({ type: 'RESOLVE_COMBAT', payload: { rolls } });
   }, []);
 
-  const movePlayer = useCallback((playerId, spaces) => {
+  // options.fromCard: a card-driven move (f8) — always forward, doesn't use up a reverse-movement roll,
+  // and the landing can't draw that same card again (no f8 chains)
+  const movePlayer = useCallback((playerId, spaces, options = {}) => {
+    const fromCard = options.fromCard ?? null;
     const currentState = stateRef.current;
     const player = currentState.players.find(p => p.id === playerId);
     if (!player) return;
     if (player.lastDrawnCard) return;
     if (movingPlayerIdRef.current !== null) return;
+    if (!(spaces > 0)) return;
 
+    // The ref guards synchronously; movingPlayerId in state lets the UI / AI / NEXT_TURN see the move
     movingPlayerIdRef.current = playerId;
-    const startPosition = player.position;
-    const totalSpaces = currentState.boardSpaces.length;
+    dispatch({ type: 'MOVE_STARTED', payload: { playerId } });
+    const finishMove = () => {
+      movingPlayerIdRef.current = null;
+      dispatch({ type: 'MOVE_FINISHED' });
+    };
 
     const STEP_MS = 400;
     const SETTLE_BEFORE_CARD_MS = 700;
@@ -2161,43 +2293,46 @@ export function GameProvider({ children }) {
         const currentState = stateRef.current;
         const currentPlayer = currentState.players.find(p => p.id === playerId);
         if (!currentPlayer) {
-          movingPlayerIdRef.current = null;
+          finishMove();
           return;
         }
         if (currentPlayer.lastDrawnCard) {
-          movingPlayerIdRef.current = null;
+          finishMove();
           return;
         }
 
-        dispatch({ type: 'MOVE_PLAYER_STEP', payload: { playerId } });
+        dispatch({ type: 'MOVE_PLAYER_STEP', payload: { playerId, forceForward: !!fromCard } });
         stepsRemaining--;
 
         if (stepsRemaining === 0) {
           setTimeout(() => {
             if (stateRef.current.players.find(p => p.id === playerId)?.lastDrawnCard) {
-              movingPlayerIdRef.current = null;
+              finishMove();
               return;
             }
             setTimeout(() => {
               if (stateRef.current.players.find(p => p.id === playerId)?.lastDrawnCard) {
-                movingPlayerIdRef.current = null;
+                finishMove();
                 return;
               }
-              dispatch({ type: 'DECREMENT_REVERSE_ROLLS', payload: { decPlayerId: playerId } });
-              dispatch({ type: 'CLEAR_DICE' });
+              if (!fromCard) {
+                dispatch({ type: 'DECREMENT_REVERSE_ROLLS', payload: { decPlayerId: playerId } });
+                dispatch({ type: 'CLEAR_DICE' });
+              }
               const updatedState = stateRef.current;
               const finalPlayer = updatedState.players.find(p => p.id === playerId);
               if (finalPlayer) {
+                // Sharing a space with someone you have a truce with is peaceful — the space acts normally
                 const otherPlayersOnSpace = updatedState.players.filter(p =>
-                  p.id !== playerId && p.position === finalPlayer.position
+                  p.id !== playerId && p.position === finalPlayer.position && !cannotAttack(updatedState, playerId, p.id)
                 );
                 if (otherPlayersOnSpace.length > 0) {
                   const defender = otherPlayersOnSpace[0];
                   startCombat(playerId, defender.id, null);
                 } else {
                   const space = updatedState.boardSpaces[finalPlayer.position];
-                  const cornerIndices = [0, 11, 21, 32];
-                  const startToFaction = { 0: 'king', 11: 'dragon', 32: 'knight', 21: 'wizard' };
+                  const cornerIndices = [0, 11, 20, 31];
+                  const startToFaction = { 0: 'king', 11: 'dragon', 31: 'knight', 20: 'wizard' };
                   let runStartLogic = false;
                   let startSpaceIndex = finalPlayer.position;
                   let startOwnerId = null;
@@ -2222,13 +2357,13 @@ export function GameProvider({ children }) {
                       dispatch({ type: 'SET_LANDED_ON_START_CHOICE', payload: { moverId: playerId, ownerId: startOwnerId } });
                     }
                   } else if (space) {
-                    handleSpaceAction(space);
+                    handleSpaceAction(space, { excludeCardIds: fromCard ? [fromCard] : [] });
                   } else {
-                    checkAndAdvanceTurn();
+                    setTimeout(() => checkAndAdvanceTurn(), 100);
                   }
                 }
               }
-              movingPlayerIdRef.current = null;
+              finishMove();
             }, SETTLE_BEFORE_CARD_MS);
           }, STEP_MS);
         } else {
@@ -2252,7 +2387,8 @@ export function GameProvider({ children }) {
   }, [checkAndAdvanceTurn]);
 
   const applyArmySpecial = useCallback((cardId, playerId, targetPlayerId = null) => {
-    dispatch({ type: 'APPLY_SPECIAL_ARMY', payload: { cardId, playerId, targetPlayerId } });
+    const rolls = cardId === 'a7' ? [rollD6(), rollD6()] : undefined; // a7: both commanders roll a die
+    dispatch({ type: 'APPLY_SPECIAL_ARMY', payload: { cardId, playerId, targetPlayerId, rolls } });
     setTimeout(() => checkAndAdvanceTurn(), 100);
   }, [checkAndAdvanceTurn]);
 
@@ -2263,27 +2399,37 @@ export function GameProvider({ children }) {
 
   const applyFateSpecial = useCallback((cardId, playerId, targetPlayerId = null) => {
     dispatch({ type: 'APPLY_SPECIAL_FATE', payload: { cardId, playerId, targetPlayerId } });
+    if (cardId === 'f8') {
+      // Reducer has cleared lastDrawnCard (movePlayer refuses to run while a card is showing)
+      setTimeout(() => movePlayer(playerId, 5, { fromCard: 'f8' }), 150);
+      return;
+    }
     setTimeout(() => checkAndAdvanceTurn(), 100);
-  }, [checkAndAdvanceTurn]);
+  }, [checkAndAdvanceTurn, movePlayer]);
 
   const keepDrawnCard = useCallback(() => {
     dispatch({ type: 'KEEP_DRAWN_CARD' });
     setTimeout(() => checkAndAdvanceTurn(), 100);
   }, [checkAndAdvanceTurn]);
 
+  // Using a kept card is a free action: it never ends the turn (the player may still need to roll)
   const useFateCard = useCallback((playerId, cardIndex) => {
     dispatch({ type: 'USE_FATE_CARD', payload: { playerId, cardIndex } });
-    setTimeout(() => checkAndAdvanceTurn(), 100);
-  }, [checkAndAdvanceTurn]);
+  }, []);
 
   const usePenaltyCard = useCallback((ownerId, targetPlayerId, cardIndex) => {
     dispatch({ type: 'USE_PENALTY_CARD', payload: { ownerId, targetPlayerId, cardIndex } });
+  }, []);
+
+  // Selling a card is an offer; the buyer accepts or declines (AI buyers answer automatically in useAITurn)
+  const sellCard = useCallback((sellerId, buyerId, cardIndex, price = 100) => {
+    dispatch({ type: 'OFFER_CARD_SALE', payload: { sellerId, buyerId, cardIndex, price } });
+  }, []);
+
+  const respondCardSale = useCallback((accept) => {
+    dispatch({ type: 'RESPOND_CARD_SALE', payload: { accept: !!accept } });
     setTimeout(() => checkAndAdvanceTurn(), 100);
   }, [checkAndAdvanceTurn]);
-
-  const sellCard = useCallback((sellerId, buyerId, cardIndex, price = 100) => {
-    dispatch({ type: 'SELL_CARD', payload: { sellerId, buyerId, cardIndex, price } });
-  }, []);
 
   const purchaseTerritory = useCallback((territoryId, cost = 300) => {
     const currentState = stateRef.current;
@@ -2329,9 +2475,11 @@ export function GameProvider({ children }) {
     const owner = currentState.players.find(p => p.id === territory.ownerId);
     
     if (owner && currentPlayer.id !== owner.id) {
+      // The territory's own tribute price (50–200G) is what's owed, whatever the caller passed
+      const owed = territory.bribe ?? getOuterTerritoryDef(territory.spaceIndex)?.bribe ?? amount;
       dispatch({
         type: 'PAY_TRIBUTE',
-        payload: { fromPlayerId: currentPlayer.id, toPlayerId: owner.id, amount },
+        payload: { fromPlayerId: currentPlayer.id, toPlayerId: owner.id, amount: owed },
       });
       dispatch({ type: 'SELECT_TERRITORY', payload: null });
       // After paying tribute, check if turn should advance
@@ -2356,56 +2504,22 @@ export function GameProvider({ children }) {
     });
   }, []);
 
-  const resolveCombat = useCallback(() => {
-    const currentState = stateRef.current;
-    const combatData = currentState.combatData;
-    if (!combatData) return;
-
-    const attacker = currentState.players.find(p => p.id === combatData.attackerId);
-    const defender = currentState.players.find(p => p.id === combatData.defenderId);
-    if (!attacker || !defender) return;
-
-    const alliances = currentState.alliances || {};
-    const getEffectiveArmy = (pid) => {
-      const a = alliances[pid];
-      if (!a?.allyId) return currentState.players.find(p => p.id === pid)?.armyStrength ?? 0;
-      const pl = currentState.players.find(x => x.id === pid);
-      const ally = currentState.players.find(x => x.id === a.allyId);
-      return Math.max(pl?.armyStrength ?? 0, ally?.armyStrength ?? 0);
-    };
-    const tactical = combatData.combatMode === 'tactical';
-    const atkArmy = getEffectiveArmy(combatData.attackerId);
-    const atkStat = tactical ? (attacker.armyStrength ?? 0) + (attacker.defenseStrength ?? 0) : atkArmy;
-    const defStat = tactical ? (defender.armyStrength ?? 0) + (defender.defenseStrength ?? 0) : (defender.defenseStrength ?? 0);
-
-    const attackerCardBonus = calculateCardBonus(attacker);
-    const defenderCardBonus = calculateCardBonus(defender);
-
-    const attackerTotal = combatData.attackerRoll + atkStat + attackerCardBonus + (combatData.attackerBribe || 0);
-    const defenderTotal = combatData.defenderRoll + defStat + defenderCardBonus + (combatData.defenderBribe || 0);
-
-    dispatch({
-      type: 'RESOLVE_COMBAT',
-      payload: {
-        ...combatData,
-        attackerTotal,
-        defenderTotal,
-      },
-    });
-
-    const fromStartLanding = combatData.combatSource === 'start_landing';
-    const fromGauntlet = combatData.combatSource === 'gauntlet';
-    setTimeout(() => {
-      if (fromGauntlet) {
-        // Gauntlet flow runs on modal close (handleGauntletClose)
-      } else if (fromStartLanding) {
-        dispatch({ type: 'END_COMBAT' });
-        dispatch({ type: 'SET_LANDED_ON_START_PHASE', payload: 'post-bribe-fight' });
-      } else {
-        checkAndAdvanceTurn();
-      }
-    }, 100);
-  }, [calculateCardBonus, checkAndAdvanceTurn]);
+  // Close a resolved combat (Continue button / AI) and run whatever follows it.
+  const finishCombat = useCallback(() => {
+    const st = stateRef.current;
+    const cd = st.combatData;
+    if (!st.combatActive || !cd || cd.winner == null) return; // not rolled yet
+    if (cd.combatSource === 'gauntlet') {
+      handleGauntletCloseRef.current?.();
+      return;
+    }
+    dispatch({ type: 'END_COMBAT' });
+    if (cd.combatSource === 'start_landing') {
+      dispatch({ type: 'SET_LANDED_ON_START_PHASE', payload: 'post-bribe-fight' });
+    } else {
+      setTimeout(() => checkAndAdvanceTurn(), 100);
+    }
+  }, [checkAndAdvanceTurn]);
 
   const endCombat = useCallback(() => {
     dispatch({ type: 'END_COMBAT' });
@@ -2419,6 +2533,7 @@ export function GameProvider({ children }) {
     
     const defender = currentState.players.find(p => p.id === territory.ownerId);
     if (!defender || defender.id === currentPlayer.id) return;
+    if (cannotAttack(currentState, currentPlayer.id, defender.id)) return; // truce in effect
 
     // Start combat using new system
     startCombat(currentPlayer.id, defender.id, territoryId);
@@ -2483,6 +2598,7 @@ export function GameProvider({ children }) {
     const st = stateRef.current;
     const choice = st.landedOnStartChoice;
     if (!choice) return;
+    if (cannotAttack(st, choice.moverId, choice.ownerId)) return; // truce: pass peacefully instead
     dispatch({ type: 'CLEAR_LANDED_ON_START_CHOICE' });
     startCombat(choice.moverId, choice.ownerId, null, 'start_landing');
   }, [startCombat]);
@@ -2511,7 +2627,19 @@ export function GameProvider({ children }) {
     setTimeout(() => checkAndAdvanceTurn(), 100);
   }, []);
 
+  const vanguardJump = useCallback((spaceIndex) => {
+    const st = stateRef.current;
+    const cp = st.players[st.currentPlayerIndex];
+    if (!cp || st.movingPlayerId != null || st.combatActive) return;
+    dispatch({ type: 'VANGUARD_JUMP', payload: { playerId: cp.id, spaceIndex } });
+  }, []);
+
   const skipTerritoryAction = useCallback(() => {
+    // An opponent's territory can't be skipped: pay tribute or attack
+    const st = stateRef.current;
+    const cp = st.players[st.currentPlayerIndex];
+    const terr = st.selectedTerritory != null ? st.territories[`territory-${st.selectedTerritory}`] : null;
+    if (terr?.ownerId && cp && terr.ownerId !== cp.id) return;
     dispatch({ type: 'SELECT_TERRITORY', payload: null });
     // After skipping territory action, check if turn should advance
     setTimeout(() => {
@@ -2519,14 +2647,16 @@ export function GameProvider({ children }) {
     }, 100);
   }, [checkAndAdvanceTurn]);
 
+  // Skip only dismisses the attack offer; the player can still roll (or the turn ends if they already have)
   const skipAttack = useCallback(() => {
-    const summary = humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn';
-    dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
-  }, []);
+    dispatch({ type: 'DISMISS_ATTACK_OFFER' });
+    setTimeout(() => checkAndAdvanceTurn(), 100);
+  }, [checkAndAdvanceTurn]);
 
   const endTurn = useCallback(() => {
-    const summary = humanTurnSummaryRef.current.length > 0 ? humanTurnSummaryRef.current.join(' · ') : 'Ended turn';
-    dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
+    const st = stateRef.current;
+    if (st.movingPlayerId != null || st.isRolling || st.combatActive) return;
+    dispatch({ type: 'NEXT_TURN', payload: { turnSummary: currentTurnSummary(), expectedTurn: st.turnNumber ?? 0 } });
   }, []);
 
   const useDoublesBonus = useCallback(() => {
@@ -2590,8 +2720,12 @@ export function GameProvider({ children }) {
     dispatch({ type: 'REQUEST_ENTER_BLUE_RUIN', payload: { playerId: player.id } });
     if (challengerIds.length === 0) {
       dispatch({ type: 'GAUNTLET_VICTORY' });
+      return;
     }
-    // Combat starts after entry animation (gauntletEntryAnimationComplete)
+    // Combat starts when the board's entry animation finishes (gauntletEntryAnimationComplete).
+    // Fallback: if that animation never reports back (backgrounded tab, unmounted board), start anyway.
+    // The handler ignores the call once the Gauntlet has left its entry phase, so this never double-fires.
+    setTimeout(() => gauntletEntryCompleteRef.current?.(), GAUNTLET_ENTRY_FALLBACK_MS);
   }, []);
 
   const gauntletEntryAnimationComplete = useCallback(() => {
@@ -2606,6 +2740,7 @@ export function GameProvider({ children }) {
       }, 150);
     }
   }, [startCombat]);
+  gauntletEntryCompleteRef.current = gauntletEntryAnimationComplete;
 
   const handleGauntletClose = useCallback(() => {
     const st = stateRef.current;
@@ -2616,6 +2751,7 @@ export function GameProvider({ children }) {
     const targetWon = combatData.winner === g.targetId;
     if (targetWon) {
       const nextIndex = (g.challengerIndex ?? 0) + 1;
+      dispatch({ type: 'END_COMBAT' }); // clears the result so a second Continue click can't advance twice
       dispatch({ type: 'GAUNTLET_ADVANCE_CHALLENGER' });
       if (nextIndex >= g.challengerIds.length) {
         dispatch({ type: 'GAUNTLET_VICTORY' });
@@ -2628,6 +2764,7 @@ export function GameProvider({ children }) {
       dispatch({ type: 'GAUNTLET_DEFEAT' });
     }
   }, [startCombat]);
+  handleGauntletCloseRef.current = handleGauntletClose;
 
   const gauntletSacrifice = useCallback((territoryId) => {
     dispatch({ type: 'GAUNTLET_SACRIFICE_TERRITORY', payload: { territoryId } });
@@ -2676,6 +2813,7 @@ export function GameProvider({ children }) {
     useFateCard,
     usePenaltyCard,
     sellCard,
+    respondCardSale,
     purchaseTerritory,
     purchaseTerritoryWithIncomeType,
     testPurchaseInnerTerritory,
@@ -2689,6 +2827,7 @@ export function GameProvider({ children }) {
     stayOnStart,
     fastTravelToStart,
     skipTerritoryAction,
+    vanguardJump,
     skipAttack,
     clearIncomeNotification,
     endTurn,
@@ -2696,7 +2835,7 @@ export function GameProvider({ children }) {
     startCombat,
     rollCombatDice,
     addCombatBribe,
-    resolveCombat,
+    finishCombat,
     endCombat,
     requestEnterBlueRuin,
     gauntletEntryAnimationComplete,
@@ -2729,7 +2868,7 @@ function generateResourceCards() {
     { id: 'r4', type: 'resource', text: 'You find gold coins in an abandoned mine', effect: { gold: 250 } },
     { id: 'r5', type: 'resource', text: 'Tax collection brings in revenue', effect: { gold: 100 } },
     { id: 'r6', type: 'resource', text: 'Set up a toll booth on your current space. For the next 3 rounds, any player who passes you pays you 50 Gold.', effect: { special: 'toll_3_rounds' } },
-    { id: 'r7', type: 'resource', text: 'Set up a toll booth on your current space. Sacrifice 2 Army points to immediately gain 500 Gold.', effect: { army: -2, gold: 500 } },
+    { id: 'r7', type: 'resource', text: 'Sacrifice 2 Army points to immediately gain 500 Gold.', effect: { army: -2, gold: 500 } },
     { id: 'r8', type: 'resource', text: 'Establish a connection with a rival kingdom. Choose a player; you both gain 200 Gold, but you cannot attack them for 2 turns.', effect: { special: 'rival_kingdom', requiresTarget: true } },
     { id: 'r9', type: 'resource', text: "You mark a spot on the map with an 'X'. Return to your start and reap the rewards.", effect: { special: 'return_to_start_rewards' } },
     { id: 'r0', type: 'resource', text: "Your influence over the region grows. Gain 50 Gold for every Territory card you currently own.", effect: { special: 'gold_per_territory', amountPer: 50 } },
@@ -2774,7 +2913,7 @@ function generateFateCards() {
     { id: 'f4', type: 'fate', text: 'Good fortune smiles upon you', effect: { gold: 150 }, keepable: false },
     { id: 'f5', type: 'fate', text: 'Allies provide support', effect: { army: 1 }, keepable: false },
     { id: 'f6', type: 'fate', text: 'The stars align and reality shifts.', effect: { special: 'swap_positions', requiresTarget: true }, keepable: false },
-    { id: 'f7', type: 'fate', text: 'A desperate alliance is formed in the ruins.', effect: { special: 'alliance', requiresTarget: true }, keepable: false },
+    { id: 'f7', type: 'fate', text: 'A truce is sworn among the ruins.', effect: { special: 'alliance', requiresTarget: true }, keepable: false },
     { id: 'f8', type: 'fate', text: 'Prosperity reaches every corner of the map.', effect: { special: 'move_5_collect_100' }, keepable: false },
     { id: 'f9', type: 'fate', text: 'A glitch in the timeline of the ruins.', effect: { special: 'cancel_next_penalty' }, keepable: false },
     { id: 'f0', type: 'fate', text: 'In search of glory', effect: { special: 'reverse_until_battle_win' }, keepable: false },

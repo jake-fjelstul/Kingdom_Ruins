@@ -7,7 +7,8 @@ A multiplayer turn-based board game web application built with React, Tailwind C
 - **2-4 Player Support**: Choose the number of players at game start
 - **Four Unique Factions**: King, Dragon, Knight, and Wizard, each with unique starting bonuses
 - **Turn-Based Gameplay**: Roll dice, move around the perimeter track, and trigger space actions
-- **Card System**: Six different card decks (Resource, Army, Defense, Fate, Penalty, New Territory)
+- **Card System**: Five card decks (Resource, Army, Defense, Fate, Penalty)
+- **AI Opponents**: Any seat can be played by the computer
 - **Territory Management**: Purchase territories, pay tribute, or attack to claim them
 - **Combat System**: Battle mechanics using Army Strength vs Defense Strength
 - **Animated UI**: Smooth animations for dice rolls and player movement using Framer Motion
@@ -51,59 +52,66 @@ npm run dev
 
 ## How to Play
 
-1. **Setup**: Choose the number of players (2-4) and click "Start Game"
-2. **Your Turn**: 
-   - Click "Roll Dice" to move your token
-   - Land on spaces to trigger actions:
-     - **Card Spaces**: Draw and apply card effects
-     - **New Territory**: Purchase, pay tribute, or attack
-3. **Card Effects**: Cards modify your Gold, Army Strength, or Defense Strength
-4. **Territories**: Own territories to generate income and control the board
-5. **Winning**: Be the first to control Primer Castle in the center!
+1. **Setup**: Choose 2–4 players, pick factions, and mark any seats as AI. Players roll; the **lowest** roll goes first.
+2. **Your Turn** — do one of these:
+   - **Roll** the dice and move clockwise. Doubles give one extra roll per turn.
+   - **Attack** an opponent 1–3 spaces ahead (instead of rolling). Press *Skip Attack* to roll instead.
+   - **Vanguard Jump**: standing on your own START, pay 100 Gold to warp to any outer territory you don't own.
+3. **Landing**:
+   - **Card spaces**: draw from that deck. Penalties you draw always apply to you; some Fate cards can be kept.
+   - **New Territory**: buy it, or pay tribute / attack if an opponent owns it.
+   - **START**: stay or fast travel. On an opponent's START, pay a 100 Gold bribe or fight.
+4. **Income**: passing your own START pays 100 Gold, +100 per outer territory, +1% of Army or Defense per inner territory.
+5. **Winning**: own both inner territories, have 10%+ combined Army and Defense and 500 Gold, then enter the Blue Ruin Zone and survive the Gauntlet against every other player.
+
+The full rulebook is in the game (the **Rules** button on the lore screen).
 
 ## Game Components
 
 ### Factions
-- **King**: Starts with 500 Gold
-- **Dragon**: Starts with +5% Army Strength
-- **Knight**: Starts with +5% Defense Strength  
-- **Wizard**: Starts with +5% Army Strength
+- **King**: 700 Gold (500 + 200 bonus)
+- **Dragon**: 500 Gold, +2% Army
+- **Knight**: 500 Gold, +2% Defense
+- **Wizard**: 500 Gold, +1% Army and +1% Defense
 
 ### Board Spaces
-- **Resource Card**: Draw from Resource deck (gain Gold)
-- **Army Card**: Draw from Army deck (increase Army Strength)
-- **Defense Card**: Draw from Defense deck (increase Defense Strength)
-- **Fate Card**: Draw from Fate deck (miscellaneous positive effects)
-- **Penalty Card**: Draw from Penalty deck (negative effects)
-- **New Territory**: Opportunity to purchase or interact with territories
+40 perimeter spaces with a START in each corner (one per faction):
+- **Resource Card**: gold and economy effects
+- **Army Card**: Army Strength
+- **Defense Card**: Defense Strength
+- **Fate Card**: mixed effects, some keepable
+- **Penalty Card**: negative effects
+- **New Territory**: six purchasable outer territories (200–400 Gold)
 
-### Card Decks
-All decks are located in the central "Primer Castle" area:
-- **Resource Deck** (Light Green): Provides Gold
-- **Army Deck** (Bright Green): Increases Army Strength
-- **Defense Deck** (Blue): Increases Defense Strength
-- **Fate Deck** (White/Pink): Positive events
-- **Penalty Deck** (Orange/Yellow): Negative events
-- **New Territory Deck** (Dark Green): Territory deeds
+Each faction also has two inner territories in its quadrant (750 and 1250 Gold).
+
+### Combat
+Total = 2d6 + stat + bribes (100 Gold per +1, max 3). The attacker uses Army, the defender Defense; a Tactical Clash (Vanguard Jump, Gauntlet) uses Army + Defense for both. Ties re-roll. The loser pays the difference ×10 (up to what they have); winning by 5+ also takes 1 stat point.
 
 ## Project Structure
 
 ```
 src/
-├── components/
-│   ├── CardModal.jsx          # Modal for displaying drawn cards
-│   ├── CardDeckZone.jsx       # Visual representation of card decks
-│   ├── Dice.jsx               # Dice rolling component
-│   ├── GameBoard.jsx          # Main game board with perimeter track
-│   ├── GameSetup.jsx          # Initial game setup screen
-│   ├── PlayerToken.jsx        # Animated player tokens
-│   └── PlayerTreasury.jsx     # Player stats and actions HUD
+├── components/            # Board, dice, modals (card, combat, START, Gauntlet, card offers), HUD
 ├── context/
-│   └── GameContext.jsx         # Game state management
-├── App.jsx                    # Main app component
-├── main.jsx                   # Entry point
-└── index.css                  # Global styles
+│   ├── GameContext.jsx    # Game rules: reducer, actions, card decks
+│   └── gameReducer.test.js
+├── hooks/
+│   ├── useAITurn.js       # AI players (turn state machine, Gauntlet, card offers)
+│   └── useGameBoardImages.js
+├── analytics/             # Game analytics recorder
+├── assets/                # WebP artwork
+├── App.jsx
+└── main.jsx
 ```
+
+## Testing
+
+```bash
+npm test
+```
+
+Runs the Vitest suite for the game rules (`src/context/gameReducer.test.js`).
 
 ## Building for Production
 
@@ -124,11 +132,8 @@ Edit the card generation functions in `src/context/GameContext.jsx`:
 - `generatePenaltyCards()`
 - `generateTerritoryCards()`
 
-### Replacing Card Images
-The game currently uses placeholder text for cards. To add images:
-1. Add your card images to a `public/cards/` directory
-2. Update the card objects to include an `image` property
-3. Modify `CardModal.jsx` to display the image
+### Artwork
+Images live in `src/assets` as WebP. To replace one, export a WebP with the same file name (for example `cwebp -q 80 input.png -o src/assets/cards/army.webp`).
 
 ## License
 

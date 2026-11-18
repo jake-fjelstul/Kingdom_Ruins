@@ -1,9 +1,9 @@
-import mossWard from './moss_ward.png';
-import aqueduct from './aqueduct.png';
-import catacombs from './catacombs.png';
-import brokenKeep from './broken_keep.png';
-import ashPits from './ash_pits.png';
-import blackSpire from './black_spire.png';
+import mossWard from './moss_ward.webp';
+import aqueduct from './aqueduct.webp';
+import catacombs from './catacombs.webp';
+import brokenKeep from './broken_keep.webp';
+import ashPits from './ash_pits.webp';
+import blackSpire from './black_spire.webp';
 
 export const TILE_IMAGES = {
   moss_ward: mossWard,

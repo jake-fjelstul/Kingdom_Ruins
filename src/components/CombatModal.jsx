@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
 
 export default function CombatModal() {
-  const { combatActive, combatData, players, resolveCombat, endCombat, addCombatBribe, rollCombatDice, handleGauntletClose } = useGame();
+  const { combatActive, combatData, players, currentPlayerIndex, finishCombat, addCombatBribe, rollCombatDice } = useGame();
   const [showResults, setShowResults] = useState(false);
   const [showAttackAnimation, setShowAttackAnimation] = useState(false);
   const isGauntlet = combatData?.combatSource === 'gauntlet';
@@ -23,19 +23,26 @@ export default function CombatModal() {
 
   const attacker = combatData ? players.find(p => p.id === combatData.attackerId) : null;
   const defender = combatData ? players.find(p => p.id === combatData.defenderId) : null;
-  const currentPlayerIndex = players.findIndex(p => p.id === combatData?.attackerId);
+  // Who may press buttons: in a normal fight the human whose turn it is; in the Gauntlet any human participant.
+  // AI-controlled fights are rolled and closed by useAITurn.
+  const turnPlayer = players[currentPlayerIndex];
+  const humanControls = isGauntlet
+    ? !!(attacker && !attacker.isAI) || !!(defender && !defender.isAI)
+    : !!(turnPlayer && !turnPlayer.isAI);
 
+  // Dice are rolled and resolved in one step; play the clash animation, then show the result
   useEffect(() => {
-    if (combatActive && combatData) {
-      if (combatData.diceRolled && !showResults) {
-        setShowAttackAnimation(true);
-        setTimeout(() => setShowAttackAnimation(false), 1000);
-        setTimeout(() => setShowResults(true), 1500);
-      } else if (!combatData.diceRolled) {
-        setShowResults(false);
-      }
+    if (!combatActive || !combatData) return undefined;
+    if (!combatData.diceRolled) {
+      setShowResults(false);
+      setShowAttackAnimation(false);
+      return undefined;
     }
-  }, [combatActive, combatData?.diceRolled, combatData?.attackerId, combatData?.defenderId, showResults]);
+    setShowAttackAnimation(true);
+    const t1 = setTimeout(() => setShowAttackAnimation(false), 1000);
+    const t2 = setTimeout(() => setShowResults(true), 1500);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [combatActive, combatData?.diceRolled, combatData?.attackerId, combatData?.defenderId]);
 
   if (!combatActive || !combatData || !attacker || !defender) return null;
 
@@ -54,28 +61,40 @@ export default function CombatModal() {
     // Results will be shown automatically via useEffect after animation
   };
 
-  const handleResolve = () => {
-    setShowResults(true);
-    resolveCombat();
-  };
-
   const handleClose = () => {
+    if (!humanControls || combatData?.winner == null) return;
     setShowResults(false);
-    if (isGauntlet) {
-      setTimeout(() => handleGauntletClose(), 0);
-    } else {
-      endCombat();
-    }
+    finishCombat();
   };
 
-  const atkStat = tactical ? (attacker.armyStrength ?? 0) + (attacker.defenseStrength ?? 0) : (attacker.armyStrength ?? 0);
-  const defStat = tactical ? (defender.armyStrength ?? 0) + (defender.defenseStrength ?? 0) : (defender.defenseStrength ?? 0);
-  const attackerTotal = diceRolled ? (combatData.attackerRoll + atkStat + (combatData.attackerBribe || 0)) : null;
-  const defenderTotal = diceRolled ? (combatData.defenderRoll + defStat + (combatData.defenderBribe || 0)) : null;
-  const attackerWins = diceRolled && attackerTotal && defenderTotal ? attackerTotal > defenderTotal : null;
-  const difference = diceRolled && attackerTotal && defenderTotal ? Math.abs(attackerTotal - defenderTotal) : 0;
+  const defenderBonus = combatData?.defenderBonus || 0; // e.g. +1 defending against a Vanguard Jump
+  const attackerBonus = combatData?.attackerBonus || 0; // Gauntlet challengers: the realm rallies against the target
+  // The reducer's stored stat includes the bonus; show the two separately
+  const attackerBaseStat = (combatData?.attackerStat ?? null) != null ? combatData.attackerStat - attackerBonus : null;
+  const atkStat = tactical
+    ? (attacker.armyStrength ?? 0) + (attacker.defenseStrength ?? 0)
+    : (attacker.armyStrength ?? 0); // shown pre-roll only
+  const defStat = tactical
+    ? (defender.armyStrength ?? 0) + (defender.defenseStrength ?? 0)
+    : (defender.defenseStrength ?? 0);
+
+  // Authoritative numbers come from the reducer once dice are rolled
+  const attackerTotal = diceRolled ? (combatData.attackerTotal ?? null) : null;
+  const defenderTotal = diceRolled ? (combatData.defenderTotal ?? null) : null;
+  const attackerWins =
+    combatData.winner != null
+      ? combatData.winner === combatData.attackerId
+      : (diceRolled && attackerTotal != null && defenderTotal != null ? attackerTotal > defenderTotal : null);
+  const difference = diceRolled && attackerTotal != null && defenderTotal != null ? Math.abs(attackerTotal - defenderTotal) : 0;
   const decisiveVictory = difference >= 5;
+  // Banner from the human's point of view: with exactly one human in the fight, they see VICTORY or
+  // DEFEAT; AI-vs-AI or two humans on one screen just name the winner.
+  const winnerPlayer = attackerWins ? attacker : defender;
+  const humansInFight = [attacker, defender].filter((p) => p && !p.isAI);
+  const bannerMood = humansInFight.length === 1 ? (humansInFight[0].id === winnerPlayer?.id ? 'win' : 'lose') : 'neutral';
+  const bannerTitle = bannerMood === 'win' ? '🎉 VICTORY! 🎉' : bannerMood === 'lose' ? '💀 DEFEAT 💀' : '🏆 VICTORY 🏆';
   const bribePot = combatData.bribePot || 0;
+  const goldPayment = combatData.goldPayment ?? 0; // capped at what the loser had
 
   return (
     <AnimatePresence>
@@ -157,7 +176,7 @@ export default function CombatModal() {
                     <div className="text-center mb-3">
                       <span className="text-2xl sm:text-3xl">{attacker.icon}</span>
                       <h3 className="text-lg sm:text-xl font-bold text-white mt-2">{attacker.name}</h3>
-                      <p className="text-red-200 text-xs sm:text-sm">{tactical ? 'Challenger (Army+Defense)' : 'Attacker (Army %)'}</p>
+                      <p className="text-red-200 text-xs sm:text-sm">{tactical ? `${isGauntlet ? 'Challenger' : 'Attacker'} (Army+Defense)` : 'Attacker (Army %)'}</p>
                     </div>
                     <div className="space-y-2 text-white">
                       {diceRolled && attackerDice ? (
@@ -192,8 +211,14 @@ export default function CombatModal() {
                           </div>
                           <div className="flex justify-between">
                             <span>{tactical ? 'Army+Defense:' : 'Army %:'}</span>
-                            <span className="font-semibold">{tactical ? atkStat : `${attacker.armyStrength}%`}</span>
+                            <span className="font-semibold">{tactical ? (attackerBaseStat ?? atkStat) : `${attackerBaseStat ?? atkStat}%`}</span>
                           </div>
+                          {attackerBonus > 0 && (
+                            <div className="flex justify-between">
+                              <span>Realm rallies:</span>
+                              <span className="font-semibold text-green-300">+{attackerBonus}</span>
+                            </div>
+                          )}
                           <div className="flex justify-between">
                             <span>Bribe Points:</span>
                             <span className="font-semibold text-yellow-300">+{combatData.attackerBribe || 0}</span>
@@ -216,6 +241,12 @@ export default function CombatModal() {
                             <span>{tactical ? 'Army+Defense:' : 'Army %:'}</span>
                             <span className="font-semibold">{tactical ? atkStat : `${attacker.armyStrength}%`}</span>
                           </div>
+                          {attackerBonus > 0 && (
+                            <div className="flex justify-between">
+                              <span>Realm rallies:</span>
+                              <span className="font-semibold text-green-300">+{attackerBonus}</span>
+                            </div>
+                          )}
                           <div className="flex justify-between">
                             <span>Gold Bribe:</span>
                             <span className="font-semibold text-yellow-300">+{combatData.attackerBribe || 0}</span>
@@ -227,7 +258,7 @@ export default function CombatModal() {
                       )}
                     </div>
                     
-                    {!diceRolled && (() => {
+                    {!diceRolled && !attacker.isAI && (() => {
                       const currentBribes = combatData.attackerBribe || 0;
                       const canAfford = attacker.gold >= 100;
                       const unlimited = isGauntlet;
@@ -286,7 +317,7 @@ export default function CombatModal() {
                     <div className="text-center mb-3">
                       <span className="text-2xl sm:text-3xl">{defender.icon}</span>
                       <h3 className="text-lg sm:text-xl font-bold text-white mt-2">{defender.name}</h3>
-                      <p className="text-blue-200 text-xs sm:text-sm">{tactical ? 'Target (Army+Defense)' : 'Defender (Defense %)'}</p>
+                      <p className="text-blue-200 text-xs sm:text-sm">{tactical ? `${isGauntlet ? 'Target' : 'Defender'} (Army+Defense)` : 'Defender (Defense %)'}</p>
                     </div>
                     <div className="space-y-2 text-white">
                       {diceRolled && defenderDice ? (
@@ -323,6 +354,12 @@ export default function CombatModal() {
                             <span>{tactical ? 'Army+Defense:' : 'Defense %:'}</span>
                             <span className="font-semibold">{tactical ? defStat : `${defender.defenseStrength}%`}</span>
                           </div>
+                          {defenderBonus > 0 && (
+                            <div className="flex justify-between">
+                              <span>Holding ground:</span>
+                              <span className="font-semibold text-green-300">+{defenderBonus}</span>
+                            </div>
+                          )}
                           <div className="flex justify-between">
                             <span>Bribe Points:</span>
                             <span className="font-semibold text-yellow-300">+{combatData.defenderBribe || 0}</span>
@@ -345,6 +382,12 @@ export default function CombatModal() {
                             <span>{tactical ? 'Army+Defense:' : 'Defense %:'}</span>
                             <span className="font-semibold">{tactical ? defStat : `${defender.defenseStrength}%`}</span>
                           </div>
+                          {defenderBonus > 0 && (
+                            <div className="flex justify-between">
+                              <span>Holding ground:</span>
+                              <span className="font-semibold text-green-300">+{defenderBonus}</span>
+                            </div>
+                          )}
                           <div className="flex justify-between">
                             <span>Gold Bribe:</span>
                             <span className="font-semibold text-yellow-300">+{combatData.defenderBribe || 0}</span>
@@ -356,7 +399,7 @@ export default function CombatModal() {
                       )}
                     </div>
                     
-                    {!diceRolled && (() => {
+                    {!diceRolled && !defender.isAI && (() => {
                       const currentBribes = combatData.defenderBribe || 0;
                       const canAfford = defender.gold >= 100;
                       const unlimited = isGauntlet;
@@ -405,7 +448,9 @@ export default function CombatModal() {
 
                 {/* Action Button - Roll Dice or Resolve */}
                 <div className="text-center">
-                  {!diceRolled ? (
+                  {diceRolled ? (
+                    <div className="text-red-100 font-semibold">⚔️ Clash in progress…</div>
+                  ) : humanControls ? (
                     <button
                       onClick={handleRollDice}
                       className="px-8 py-3 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white font-bold text-lg rounded-lg shadow-lg transition-all"
@@ -413,12 +458,7 @@ export default function CombatModal() {
                       Roll Dice
                     </button>
                   ) : (
-                    <button
-                      onClick={handleResolve}
-                      className="px-8 py-3 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white font-bold text-lg rounded-lg shadow-lg transition-all"
-                    >
-                      Resolve Combat
-                    </button>
+                    <div className="text-red-100 font-semibold">AI is preparing to roll…</div>
                   )}
                 </div>
               </>
@@ -447,7 +487,7 @@ export default function CombatModal() {
                       }}
                       transition={{ duration: 2, repeat: Infinity }}
                       className={`inline-block px-8 py-4 rounded-lg ${
-                        attackerWins ? 'bg-gradient-to-r from-yellow-600 to-orange-600' : 'bg-gradient-to-r from-blue-600 to-purple-600'
+                        bannerMood === 'lose' ? 'bg-gradient-to-r from-blue-600 to-purple-600' : 'bg-gradient-to-r from-yellow-600 to-orange-600'
                       }`}
                     >
                       <motion.h2
@@ -456,7 +496,7 @@ export default function CombatModal() {
                         transition={{ delay: 0.2, type: 'spring' }}
                         className="text-5xl font-bold text-white"
                       >
-                        {attackerWins ? '🎉 VICTORY! 🎉' : '💀 DEFEAT 💀'}
+                        {bannerTitle}
                       </motion.h2>
                       <motion.p
                         initial={{ opacity: 0 }}
@@ -464,7 +504,7 @@ export default function CombatModal() {
                         transition={{ delay: 0.4 }}
                         className="text-2xl text-white mt-2 font-semibold"
                       >
-                        {attackerWins ? attacker.name : defender.name} Wins!
+                        {winnerPlayer?.name} Wins!
                       </motion.p>
                     </motion.div>
                   </motion.div>
@@ -518,11 +558,11 @@ export default function CombatModal() {
                       >
                         <div className="bg-green-600/80 rounded-lg px-6 py-3 border-2 border-green-400">
                           <span className="text-3xl font-bold text-white">
-                            +${(difference * 10) + bribePot}
+                            +${goldPayment + bribePot}
                           </span>
                           {bribePot > 0 && (
                             <div className="text-xs text-yellow-200 mt-1 text-center">
-                              (${difference * 10} payment + ${bribePot} pot)
+                              (${goldPayment} payment + ${bribePot} pot)
                             </div>
                           )}
                         </div>
@@ -542,7 +582,7 @@ export default function CombatModal() {
                     {!isGauntlet && (
                       <>
                         <p className="text-lg text-white mb-2">
-                          Gold Payment: <span className="font-bold text-green-300">${difference * 10}</span>
+                          Gold Payment: <span className="font-bold text-green-300">${goldPayment}</span>
                         </p>
                         {bribePot > 0 && (
                           <p className="text-lg text-white mb-2">
@@ -563,23 +603,26 @@ export default function CombatModal() {
                         transition={{ delay: 2.2 }}
                         className="text-red-300 font-semibold mt-3"
                       >
-                        ⚠️ Decisive Victory! Winner may force loser to discard a 1% card.
+                        {combatData.decisiveSteal
+                          ? `⚠️ Decisive Victory! ${attackerWins ? attacker.name : defender.name} takes 1 ${combatData.decisiveSteal.stat === 'army' ? 'Army' : 'Defense'} from ${attackerWins ? defender.name : attacker.name}.`
+                          : '⚠️ Decisive Victory! (The loser had no stats to take.)'}
                       </motion.p>
                     )}
                   </motion.div>
 
-                  <motion.button
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: 2.5 }}
-                    onClick={() => {
-                      resolveCombat();
-                      handleClose();
-                    }}
-                    className="px-8 py-3 bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700 text-white font-bold text-lg rounded-lg shadow-lg transition-all"
-                  >
-                    Continue
-                  </motion.button>
+                  {humanControls ? (
+                    <motion.button
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 2.5 }}
+                      onClick={handleClose}
+                      className="px-8 py-3 bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700 text-white font-bold text-lg rounded-lg shadow-lg transition-all"
+                    >
+                      Continue
+                    </motion.button>
+                  ) : (
+                    <p className="text-white/80 font-semibold">AI is continuing…</p>
+                  )}
                 </motion.div>
               </>
             )}

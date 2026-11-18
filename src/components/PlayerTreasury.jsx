@@ -1,5 +1,5 @@
 import React from 'react';
-import { useGame, getOuterTerritoryDef } from '../context/GameContext';
+import { useGame, getOuterTerritoryDef, getInnerTerritoryCost, getTerritorySalePrice, getBankDebt, cannotAttack } from '../context/GameContext';
 
 export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 4, boardHeight = 1050 }) {
   const {
@@ -33,17 +33,25 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
     defensiveStructures = {},
     reverseMovement = {},
     penaltyImmunity = {},
-    alliances = {},
     reverseUntilBattleWin = {},
     aiTurnSummaryByPlayerId = {},
+    attackOfferDismissed,
+    movingPlayerId,
+    cardSaleOffer,
   } = useGame();
   const currentPlayer = players[currentPlayerIndex];
   const isActuallyCurrent = currentPlayer?.id === player.id;
+  // Only the human whose turn it is may press buttons; AI panels are read-only
+  const canAct = isActuallyCurrent && !player.isAI;
+  const busy = combatActive || movingPlayerId != null || cardSaleOffer != null;
 
   const getActiveEffects = (pid) => {
     const out = [];
     const toll = tollBooths[pid];
-    if (toll?.roundsLeft != null) out.push({ label: 'Toll booth', duration: `${toll.roundsLeft} round${toll.roundsLeft !== 1 ? 's' : ''} left` });
+    if (toll?.turnsLeft != null) {
+      const rounds = Math.ceil(toll.turnsLeft / Math.max(1, players.length));
+      out.push({ label: 'Toll booth', duration: `${rounds} round${rounds !== 1 ? 's' : ''} left` });
+    }
     const imm = attackImmunity?.[pid];
     if (imm && typeof imm === 'object' && Object.keys(imm).length) {
       const names = Object.entries(imm)
@@ -56,27 +64,16 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
     const buyTurns = cannotBuyTerritories[pid];
     if (buyTurns != null && buyTurns > 0) out.push({ label: "Can't buy territories", duration: `${buyTurns} turn${buyTurns !== 1 ? 's' : ''} left` });
     if (territoryCostPlus100[pid]) out.push({ label: 'Next territory +100 Gold', duration: null });
-    if (goldBlockedUntilPayoff[pid]) out.push({ label: 'Gold blocked until Resource pay‑off', duration: null });
+    const debt = getBankDebt({ goldBlockedUntilPayoff }, pid);
+    if (debt > 0) out.push({ label: 'Bank debt: earnings go to the bank', duration: `${debt}G left` });
     if (defensiveStructures[pid]) out.push({ label: 'Opponents lose 1 Army on your territory', duration: null });
     const revRolls = reverseMovement[pid];
     if (revRolls != null && revRolls > 0) out.push({ label: 'Move in reverse', duration: `${revRolls} roll${revRolls !== 1 ? 's' : ''} left` });
     if (penaltyImmunity[pid]) out.push({ label: 'Immune to next penalty', duration: null });
-    const ally = alliances[pid];
-    if (ally?.allyId) {
-      const name = players.find((p) => p.id === ally.allyId)?.name;
-      const t = ally.turnsLeft ?? 0;
-      out.push({ label: `Allied with ${name || '?'} (share Army)`, duration: t > 0 ? `${t} turn${t !== 1 ? 's' : ''} left` : null });
-    }
     if (reverseUntilBattleWin[pid]) out.push({ label: 'Move in reverse until battle win', duration: null });
     return out;
   };
   const activeEffects = getActiveEffects(player.id);
-  const getInnerTerritoryCost = (territoryId) => {
-    // First inner territory (corner) costs 750G, second (side) costs 1250G
-    if (/-1$/.test(territoryId)) return 750;
-    if (/-2$/.test(territoryId)) return 1250;
-    return 750;
-  };
 
   // Calculate dynamic sizes based on player count and board height
   // Account for gaps between players (gap is ~1.5rem, so subtract that from total)
@@ -102,7 +99,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
         isInner: true,
         title: 'Inner Territory',
         badge: `${incomeSkill} Income`,
-        description: `This inner territory adds 1% of your ${incomeSkill.toLowerCase()} stat to your salary when you cross START.`,
+        description: `Gives you +1 ${incomeSkill} every time you pass your START.`,
       };
     }
 
@@ -121,7 +118,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
       isInner: false,
       title: spaceLabel,
       badge: 'Gold Income',
-      description: 'Adds +100G to your salary when you cross START.',
+      description: 'Adds +100G to your salary when you cross START. Opponents who land here pay you tribute.',
     };
   };
 
@@ -207,7 +204,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
                         {[c.effect.gold != null && `Gold ${c.effect.gold >= 0 ? '+' : ''}${c.effect.gold}`, c.effect.army != null && `Army ${c.effect.army >= 0 ? '+' : ''}${c.effect.army}%`, c.effect.defense != null && `Def ${c.effect.defense >= 0 ? '+' : ''}${c.effect.defense}%`].filter(Boolean).join(' · ')}
                       </p>
                     )}
-                    {isActuallyCurrent && (
+                    {canAct && !busy && (
                       <div className="flex flex-wrap gap-1 mt-1">
                         {c.type === 'fate' && (
                           <button
@@ -240,7 +237,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
                               className="bg-slate-500 hover:bg-slate-600 text-white rounded px-2 py-0.5 text-xs font-semibold"
                               style={{ fontSize: `clamp(0.5rem, ${availableHeight * 0.04}px, 0.65rem)` }}
                             >
-                              Sell to {buyer.name} (100g)
+                              Offer to {buyer.name} (100g)
                             </button>
                           ))}
                       </div>
@@ -315,13 +312,13 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
                         {info.description}
                       </span>
                     </div>
-                    {isActuallyCurrent && (
+                    {canAct && !busy && (
                       <button
                         onClick={() => sellTerritory(territoryId)}
                         className="bg-orange-600 hover:bg-orange-700 text-white rounded px-2 self-center flex-shrink-0"
                         style={{ padding: `clamp(0.125rem, ${availableHeight * 0.015}px, 0.2rem)`, fontSize: `clamp(0.5rem, ${availableHeight * 0.04}px, 0.65rem)` }}
                       >
-                        Sell (150G)
+                        Sell ({getTerritorySalePrice({ territories }, territoryId)}G)
                       </button>
                     )}
                   </div>
@@ -336,11 +333,11 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
         </div>
 
         {/* Income Type Selection - When purchasing first inner territory */}
-        {isActuallyCurrent && pendingIncomeTypeSelection !== null && (
+        {canAct && pendingIncomeTypeSelection !== null && (
           <div className="bg-gray-700 rounded flex-shrink-0" style={{ padding: statPadding }}>
             <div className="text-white mb-1" style={{ fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}>Choose Income Type</div>
             <div className="text-white mb-2" style={{ fontSize: `clamp(0.5rem, ${availableHeight * 0.04}px, 0.65rem)` }}>
-              For this inner territory, choose which stat will add 1% to your salary each time you cross START.
+              Choose which stat this inner territory raises by +1 each time you pass your START.
             </div>
             <div className="flex flex-col gap-1">
               <button
@@ -362,7 +359,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
         )}
 
         {/* Inner Green Territory Purchase - Corner Selection */}
-        {isActuallyCurrent && selectedCorner !== null && pendingIncomeTypeSelection === null && (
+        {canAct && selectedCorner !== null && pendingIncomeTypeSelection === null && (
           <div className="bg-gray-700 rounded flex-shrink-0" style={{ padding: statPadding }}>
             <div className="text-white mb-1" style={{ fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}>Purchase Inner Territories</div>
             <div className="flex flex-col gap-1">
@@ -403,7 +400,7 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
         )}
 
         {/* Territory Purchase/Action */}
-        {isActuallyCurrent && selectedTerritory !== null && selectedCorner === null && (() => {
+        {canAct && selectedTerritory !== null && selectedCorner === null && (() => {
           const territoryId = `territory-${selectedTerritory}`;
           const territory = territories[territoryId];
           const def = getOuterTerritoryDef(selectedTerritory);
@@ -411,9 +408,14 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
           const bribe = territory?.bribe ?? def?.bribe ?? 100;
           const isOwned = !!territory?.ownerId;
           const isOwnedByOther = isOwned && territory.ownerId !== player.id;
+          const owner = isOwnedByOther ? players.find((p) => p.id === territory.ownerId) : null;
+          const truce = !!(owner && cannotAttack({ attackImmunity }, player.id, owner.id));
+          const heading = isOwnedByOther
+            ? `${owner?.icon ?? ''} ${owner?.name ?? 'Opponent'}'s ${def?.name ?? 'territory'}: pay tribute${truce ? '' : ' or attack'}`
+            : isOwned ? `Your ${def?.name ?? 'territory'}` : `${def?.name ?? 'Territory'} is available`;
           return (
             <div className="bg-gray-700 rounded flex-shrink-0" style={{ padding: statPadding }}>
-              <div className="text-white mb-1" style={{ fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}>Territory Available</div>
+              <div className="text-white mb-1" style={{ fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}>{heading}</div>
               <div className="flex gap-1 flex-wrap">
                 {!isOwned && (
                   <button
@@ -431,31 +433,34 @@ export default function PlayerTreasury({ player, isCurrentPlayer, playerCount = 
                       className="bg-yellow-600 hover:bg-yellow-700 text-white rounded flex-1 min-w-0"
                       style={{ padding: `clamp(0.125rem, ${availableHeight * 0.02}px, 0.25rem)`, fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}
                     >
-                      Bribe ({bribe}G)
+                      Pay tribute ({Math.min(bribe, player.gold)}G)
                     </button>
-                    <button
-                      onClick={() => attackTerritory(territoryId)}
-                      className="bg-red-600 hover:bg-red-700 text-white rounded flex-1 min-w-0"
-                      style={{ padding: `clamp(0.125rem, ${availableHeight * 0.02}px, 0.25rem)`, fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}
-                    >
-                      Attack
-                    </button>
+                    {!truce && (
+                      <button
+                        onClick={() => attackTerritory(territoryId)}
+                        className="bg-red-600 hover:bg-red-700 text-white rounded flex-1 min-w-0"
+                        style={{ padding: `clamp(0.125rem, ${availableHeight * 0.02}px, 0.25rem)`, fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}
+                      >
+                        Attack
+                      </button>
+                    )}
                   </>
                 )}
-                <button
+                {/* Landing on an opponent's territory always costs tribute or a fight — no free skip */}
+                {!isOwnedByOther && <button
                   onClick={skipTerritoryAction}
                   className="bg-gray-600 hover:bg-gray-700 text-white rounded flex-1 min-w-0"
                   style={{ padding: `clamp(0.125rem, ${availableHeight * 0.02}px, 0.25rem)`, fontSize: `clamp(0.625rem, ${availableHeight * 0.05}px, 0.75rem)` }}
                 >
-                  Skip
-                </button>
+                  {isOwned ? 'Continue' : 'Skip'}
+                </button>}
               </div>
             </div>
           );
         })()}
 
         {/* Attack Nearby Players - Only show for current player when not in combat */}
-        {isActuallyCurrent && !combatActive && !selectedTerritory && !selectedCorner && !player.lastDrawnCard && (() => {
+        {canAct && !busy && !attackOfferDismissed && selectedTerritory === null && !selectedCorner && !player.lastDrawnCard && (() => {
           const totalSpaces = boardSpaces.length;
           const currentPlayerAttacked = attackedPlayers[player.id] || [];
           

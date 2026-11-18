@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
 import diceBackground from '../assets/dice_background.webp';
@@ -46,6 +46,17 @@ export default function RollForFirst() {
       ? firstPlayerRolls.filter((r) => r.sum === minSum)
       : [];
   const isTie = lowestRolls.length > 1;
+  const allAI = players.length > 0 && players.every((p) => p.isAI);
+
+  // AI seats roll for themselves. An all-AI game also re-rolls ties and starts on its own.
+  useEffect(() => {
+    if (isRolling) return undefined;
+    let t;
+    if (currentRoller?.isAI) t = setTimeout(handleRoll, 700);
+    else if (allAI && allRolled) t = setTimeout(isTie ? handleReRoll : handleBegin, 1200);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRolling, currentRoller?.id, allAI, allRolled, isTie]);
 
   return (
     <div
@@ -228,16 +239,20 @@ export default function RollForFirst() {
                 >
                   <p className="text-slate-300 text-center text-sm">
                     <span className="text-2xl mr-2">{currentRoller.icon}</span>
-                    <strong className="text-white">{currentRoller.name}</strong>, roll!
+                    <strong className="text-white">{currentRoller.name}</strong>{currentRoller.isAI ? '' : ', roll!'}
                   </p>
-                  <motion.button
-                    onClick={handleRoll}
-                    className="px-6 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-lg"
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                  >
-                    Roll
-                  </motion.button>
+                  {currentRoller.isAI ? (
+                    <p className="text-slate-400 text-sm">{currentRoller.name} (AI) is rolling…</p>
+                  ) : (
+                    <motion.button
+                      onClick={handleRoll}
+                      className="px-6 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-lg"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      Roll
+                    </motion.button>
+                  )}
                 </motion.div>
               )}
 

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local copy of the source made for uploading to an AI chat
+Context_Files(Upload)/
