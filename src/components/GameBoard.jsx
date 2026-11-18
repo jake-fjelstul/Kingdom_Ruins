@@ -11,8 +11,8 @@ const getCornerIcon = (corner) => {
 };
 import PlayerToken from './PlayerToken';
 import CentralCastle from './CentralCastle';
-import gameBackgroundImg from '../assets/game_background.png';
-import bridgeImg from '../assets/bridge.png';
+import gameBackgroundImg from '../assets/game_background.webp';
+import bridgeImg from '../assets/bridge.webp';
 import kingImg from '../assets/player_territories/king.webp';
 import king1Img from '../assets/player_territories/king_1.webp';
 import king2Img from '../assets/player_territories/king_2.webp';
@@ -20,10 +20,10 @@ import dragonImg from '../assets/player_territories/dragon.webp';
 import dragon1Img from '../assets/player_territories/dragon_1.webp';
 import dragon2Img from '../assets/player_territories/dragon_2.webp';
 import knightImg from '../assets/player_territories/knight.webp';
-import knight1Img from '../assets/player_territories/knight_1.png';
-import knight2Img from '../assets/player_territories/knight_2.png';
-import wizardImg from '../assets/player_territories/wizard.png';
-import wizard1Img from '../assets/player_territories/wizard_1.png';
+import knight1Img from '../assets/player_territories/knight_1.webp';
+import knight2Img from '../assets/player_territories/knight_2.webp';
+import wizardImg from '../assets/player_territories/wizard.webp';
+import wizard1Img from '../assets/player_territories/wizard_1.webp';
 import wizard2Img from '../assets/player_territories/wizard_2.webp';
 
 const CENTER_X = 50;
@@ -70,6 +70,9 @@ export default function GameBoard() {
     const m = id.match(/^inner-(tl|tr|bl|br)-/);
     return m ? m[1] : null;
   };
+  // A human may open their own faction's corner (not by seat number) on their turn
+  const canPickCorner = (corner) =>
+    !!currentPlayer && !currentPlayer.isAI && currentPlayer.faction === CORNER_FACTION[corner];
   const isCornerInPlay = (corner) => {
     const factionId = CORNER_FACTION[corner];
     return factionId && players.some((p) => p.faction === factionId);
@@ -81,23 +84,24 @@ export default function GameBoard() {
   const getPosition = (index) => {
     const widthPercent = (1 / COLUMNS) * 100;
     const heightPercent = (1 / ROWS) * 100;
-    
-    if (index <= 11) {
+
+    if (index <= 11) { // top row: 0–11 (12 cells, corners 0 and 11)
       const centerX = ((index + 0.5) / COLUMNS) * 100;
       return { x: Math.max(0, centerX - widthPercent / 2), y: 0, centerX, centerY: heightPercent / 2, widthPercent, heightPercent };
     }
-    if (index <= 20) {
+    if (index <= 19) { // right edge interior: 12–19 (8 cells, rows 1..8)
       const rowPosition = index - 11;
       const centerY = ((rowPosition + 0.5) / ROWS) * 100;
       return { x: 100 - widthPercent, y: Math.max(heightPercent / 2, centerY - heightPercent / 2), centerX: 100 - widthPercent / 2, centerY, widthPercent, heightPercent };
     }
-    if (index <= 32) {
-      const bottomIndex = index - 21;
+    if (index <= 31) { // bottom row: 20–31 (12 cells; 20 = bottom-right corner, 31 = bottom-left corner)
+      const bottomIndex = index - 20;
       const colPosition = COLUMNS - 1 - bottomIndex;
       const centerX = ((colPosition + 0.5) / COLUMNS) * 100;
       return { x: Math.max(0, centerX - widthPercent / 2), y: 100 - heightPercent, centerX, centerY: 100 - heightPercent / 2, widthPercent, heightPercent };
     }
-    const leftIndex = index - 33;
+    // left edge interior: 32–39 (8 cells, rows 8..1 bottom-to-top)
+    const leftIndex = index - 32;
     const rowsOnLeft = [8, 7, 6, 5, 4, 3, 2, 1];
     const rowPosition = rowsOnLeft[leftIndex];
     const centerY = ((rowPosition + 0.5) / ROWS) * 100;
@@ -222,9 +226,9 @@ export default function GameBoard() {
           <>
             {/* Top Left Corner - King 👑 (Player 0) */}
             <div 
-              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'tl' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${currentPlayerIndex === 0 ? 'cursor-pointer hover:opacity-90' : ''}`}
+              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'tl' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${canPickCorner('tl') ? 'cursor-pointer hover:opacity-90' : ''}`}
               style={{ top: '10%', left: '8.33%', width: '15%', height: '18%', ...getSectionStyle('inner-tl') }}
-              onClick={() => currentPlayerIndex === 0 && selectCorner('tl')}
+              onClick={() => canPickCorner('tl') && selectCorner('tl')}
             >
               <div className="flex items-center justify-center rounded-full" style={{ backgroundColor: 'rgba(255, 242, 168, 0.5)', padding: 'clamp(0.3rem, 1vmin, 0.6rem)', zIndex: 10 }}>
                 <span className="opacity-80 flex-shrink-0" style={{ fontSize: 'clamp(0.9rem, 3vmin, 1.875rem)' }}>👑</span>
@@ -235,9 +239,9 @@ export default function GameBoard() {
             
             {/* Top Right Corner - Dragon 🐉 (Player 1) */}
             <div 
-              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'tr' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${currentPlayerIndex === 1 ? 'cursor-pointer hover:opacity-90' : ''}`}
+              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'tr' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${canPickCorner('tr') ? 'cursor-pointer hover:opacity-90' : ''}`}
               style={{ top: '10%', right: '8.33%', width: '15%', height: '18%', ...getSectionStyle('inner-tr') }}
-              onClick={() => currentPlayerIndex === 1 && selectCorner('tr')}
+              onClick={() => canPickCorner('tr') && selectCorner('tr')}
             >
               <div className="flex items-center justify-center rounded-full" style={{ backgroundColor: 'rgba(47, 107, 58, 0.4)', padding: 'clamp(0.3rem, 1vmin, 0.6rem)', zIndex: 10 }}>
                 <span className="opacity-80 flex-shrink-0" style={{ fontSize: 'clamp(0.9rem, 3vmin, 1.875rem)' }}>🐉</span>
@@ -248,9 +252,9 @@ export default function GameBoard() {
             
             {/* Bottom Left Corner - Knight ⚔️ (Player 2) */}
             <div 
-              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'bl' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${currentPlayerIndex === 2 ? 'cursor-pointer hover:opacity-90' : ''}`}
+              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'bl' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${canPickCorner('bl') ? 'cursor-pointer hover:opacity-90' : ''}`}
               style={{ bottom: '10%', left: '8.33%', width: '15%', height: '18%', ...getSectionStyle('inner-bl') }}
-              onClick={() => currentPlayerIndex === 2 && selectCorner('bl')}
+              onClick={() => canPickCorner('bl') && selectCorner('bl')}
             >
               <div className="flex items-center justify-center rounded-full" style={{ backgroundColor: 'rgba(248, 250, 252, 0.6)', padding: 'clamp(0.3rem, 1vmin, 0.6rem)', zIndex: 10 }}>
                 <span className="opacity-80 flex-shrink-0" style={{ fontSize: 'clamp(0.9rem, 3vmin, 1.875rem)' }}>⚔️</span>
@@ -261,9 +265,9 @@ export default function GameBoard() {
             
             {/* Bottom Right Corner - Wizard 🧙 (Player 3) */}
             <div 
-              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'br' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${currentPlayerIndex === 3 ? 'cursor-pointer hover:opacity-90' : ''}`}
+              className={`absolute border-2 border-b-4 border-r-4 border-b-stone-600 border-r-stone-600 ${selectedCorner === 'br' ? 'border-yellow-400' : 'border-black/30'} flex items-center justify-center z-20 overflow-hidden min-w-0 ${canPickCorner('br') ? 'cursor-pointer hover:opacity-90' : ''}`}
               style={{ bottom: '10%', right: '8.33%', width: '15%', height: '18%', ...getSectionStyle('inner-br') }}
-              onClick={() => currentPlayerIndex === 3 && selectCorner('br')}
+              onClick={() => canPickCorner('br') && selectCorner('br')}
             >
               <div className="flex items-center justify-center rounded-full" style={{ backgroundColor: 'rgba(109, 40, 217, 0.4)', padding: 'clamp(0.3rem, 1vmin, 0.6rem)', zIndex: 10 }}>
                 <span className="opacity-80 flex-shrink-0" style={{ fontSize: 'clamp(0.9rem, 3vmin, 1.875rem)' }}>🧙</span>
@@ -360,7 +364,7 @@ export default function GameBoard() {
       {/* 3. PERIMETER SPACES */}
       {boardSpaces.map((space, index) => {
         const { x, y, widthPercent, heightPercent } = getPosition(index);
-        const isCorner = index === 0 || index === 11 || index === 21 || index === 32;
+        const isCorner = index === 0 || index === 11 || index === 20 || index === 31;
         const isOwned = space.owned && space.ownerId;
         const owner = isOwned ? players.find(p => p.id === space.ownerId) : null;
         const isNewTerritory = !isOwned && space.type === SPACE_TYPES.NEW_TERRITORY;

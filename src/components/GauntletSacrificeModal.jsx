@@ -7,7 +7,7 @@ export default function GauntletSacrificeModal() {
 
   if (!gauntlet || gauntlet.phase !== 'sacrifice_prompt') return null;
   const target = players.find((p) => p.id === gauntlet.targetId);
-  if (!target) return null;
+  if (!target || target.isAI) return null; // the AI makes its own sacrifice choice (useAITurn)
   const outer = (target.ownedTerritories || []).filter((t) => !t.startsWith('inner-'));
   if (outer.length === 0) return null;
 
@@ -30,13 +30,13 @@ export default function GauntletSacrificeModal() {
             🛡️ Sacrifice to Stay in the Blue Ruin Zone
           </h2>
           <p className="text-amber-100 text-center mb-6">
-            You lost a clash. Sacrifice an outer territory to remain and re-attempt the Gauntlet, or decline to return to the board.
+            You lost a clash. Sacrifice an outer territory to stay and retry the Gauntlet, or decline: you'll lose an inner territory, return to your START, and your turn ends.
           </p>
           <div className="flex flex-col gap-2 mb-6">
             {outer.map((tid) => {
               const t = territories[tid];
               const space = t?.spaceIndex != null ? boardSpaces[t.spaceIndex] : null;
-              const label = space ? `Space ${t.spaceIndex}` : tid;
+              const label = space?.label || (t?.spaceIndex != null ? `Space ${t.spaceIndex}` : tid);
               return (
                 <button
                   key={tid}
@@ -52,7 +52,7 @@ export default function GauntletSacrificeModal() {
             onClick={gauntletDeclineSacrifice}
             className="w-full py-3 px-4 rounded-lg font-bold bg-slate-600 hover:bg-slate-500 text-white transition-all"
           >
-            Decline — Return to board
+            Decline — lose an inner territory, return to START
           </button>
         </motion.div>
       </motion.div>

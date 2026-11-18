@@ -5,19 +5,19 @@ import { useGame, FACTIONS } from '../context/GameContext';
 const START_SPACES = [
   { spaceIndex: 0, factionKey: 'KING' },
   { spaceIndex: 11, factionKey: 'DRAGON' },
-  { spaceIndex: 21, factionKey: 'WIZARD' },
-  { spaceIndex: 32, factionKey: 'KNIGHT' },
+  { spaceIndex: 20, factionKey: 'WIZARD' },
+  { spaceIndex: 31, factionKey: 'KNIGHT' },
 ];
 
-const SPACE_TO_FACTION = { 0: 'KING', 11: 'DRAGON', 21: 'WIZARD', 32: 'KNIGHT' };
+const SPACE_TO_FACTION = { 0: 'KING', 11: 'DRAGON', 20: 'WIZARD', 31: 'KNIGHT' };
 
 export default function StartLandingModal() {
-  const { landedOnStart, landedOnStartChoice, players, stayOnStart, fastTravelToStart } = useGame();
+  const { landedOnStart, landedOnStartChoice, players, stayOnStart, fastTravelToStart, combatActive } = useGame();
   const [showDestinations, setShowDestinations] = useState(false);
 
-  if (!landedOnStart || landedOnStartChoice) return null;
+  if (!landedOnStart || landedOnStartChoice || combatActive) return null;
   const mover = players.find((p) => p.id === landedOnStart.moverId);
-  if (!mover) return null;
+  if (!mover || mover.isAI) return null; // the AI resolves its own START landing
   const owner = landedOnStart.ownerId ? players.find((p) => p.id === landedOnStart.ownerId) : null;
   const isNonPlayerStart = landedOnStart.ownerId === null;
   const isOwnStart = mover && owner && landedOnStart.moverId === landedOnStart.ownerId;

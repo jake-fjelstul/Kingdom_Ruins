@@ -2,7 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { useGame } from '../context/GameContext';
 import { exportSessionAsJSON } from '../analytics';
-import winBackground from '../assets/screen_backgrounds/win_background.png';
+import winBackground from '../assets/screen_backgrounds/win_background.webp';
 
 export default function VictoryScreen({ victor, onRestart }) {
   const { getAnalyticsRecorder } = useGame();

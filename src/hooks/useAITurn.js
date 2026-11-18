@@ -4,17 +4,44 @@ import {
   canEnterBlueRuinZone,
   INNER_BY_FACTION,
   FACTION_TO_START_INDEX,
-  NEW_TERRITORY_SPACE_INDICES,
   getOuterTerritoryDef,
   MIN_COMBINED_STATS,
+  cannotAttack,
+  getInnerTerritoryCost,
+  getVanguardTargets,
+  getCombatStats,
 } from '../context/GameContext';
 import { useSettings } from '../context/SettingsContext';
 import { roll2d6, randomInt } from '../utils/dice';
+
+/** AI trace logging: silent unless running the dev server with localStorage.kr_ai_debug = '1'. */
+const aiLog = (() => {
+  try {
+    if (import.meta.env?.DEV && globalThis.localStorage?.getItem('kr_ai_debug') === '1') return console.log.bind(console);
+  } catch {
+    // storage blocked — stay quiet
+  }
+  return () => {};
+})();
+
+/** Rough standing: gold + stats + territories (used to aim harmful cards at whoever is ahead). */
+const leaderScore = (p) => (p.gold ?? 0) + 100 * ((p.armyStrength ?? 0) + (p.defenseStrength ?? 0)) + 300 * (p.ownedTerritories?.length ?? 0);
+
+/** Highest-scoring opponent (optionally filtered); ties are broken at random so no seat is singled out. */
+function pickTarget(state, me, score, filter = () => true) {
+  const options = (state.players || []).filter((p) => p.id !== me.id && filter(p));
+  if (!options.length) return null;
+  const best = Math.max(...options.map(score));
+  const top = options.filter((p) => score(p) === best);
+  return top[randomInt(top.length)];
+}
 
 // Delays tuned so other players can clearly see what the AI does
 const DELAY_MS = 1200;
 const ROLL_AND_MOVE_MS = 1600;
 const COMBAT_ROLL_MS = 1500;
+/** How long a resolved combat result stays on screen before the AI presses Continue */
+const COMBAT_RESULT_MS = 3500;
 /** Give humans (and AI) time to set bribes before dice are rolled */
 const COMBAT_BRIBE_WINDOW_MS = 1500;
 /** Hard safety cap so the AI never waits forever for a move to finish */
@@ -43,11 +70,6 @@ const AI_STATES = {
   END_TURN: 'END_TURN',
 };
 
-function getInnerTerritoryCost(territoryId) {
-  if (/-1$/.test(territoryId)) return 750;
-  if (/-2$/.test(territoryId)) return 1250;
-  return 750;
-}
 
 export function useAITurn() {
   const game = useGame();
@@ -121,35 +143,42 @@ export function useAITurn() {
 
       switch (stateName) {
         case AI_STATES.EVALUATE_BOARD: {
-          console.log('[AI FSM] EVALUATE_BOARD — start of turn', { playerId: ai.id, gold: ai.gold, army: ai.armyStrength, defense: ai.defenseStrength });
+          aiLog('[AI FSM] EVALUATE_BOARD — start of turn', { playerId: ai.id, gold: ai.gold, army: ai.armyStrength, defense: ai.defenseStrength });
 
           const combined = (ai.armyStrength ?? 0) + (ai.defenseStrength ?? 0);
           const hasBothInners = (INNER_BY_FACTION[ai.faction] || []).every((id) => (ai.ownedTerritories || []).includes(id));
           const canBlueRuin = ai.gold >= 500 && combined >= MIN_COMBINED_STATS && hasBothInners && canEnterBlueRuinZone(ai, state);
 
           if (canBlueRuin) {
-            console.log('[AI FSM] EVALUATE_BOARD — endgame: entering Blue Ruin Zone');
+            aiLog('[AI FSM] EVALUATE_BOARD — endgame: entering Blue Ruin Zone');
             turnSummaryRef.current.push('Entered Blue Ruin Zone');
             g.requestEnterBlueRuin?.();
             runningRef.current = false;
             return;
           }
 
-          // Only consider Vanguard Jump after at least one full round, so the first turn always shows dice roll + step animation
-          const isFirstRound = (state.currentRound ?? 0) === 0;
-          if (!isFirstRound && ai.position === startIndex && (ai.gold ?? 0) >= 100) {
-            const unownedNewTerritories = NEW_TERRITORY_SPACE_INDICES.filter((idx) => {
-              const space = boardSpaces[idx];
-              return space && !space.owned;
+          // Only consider Vanguard Jump after this AI has completed at least one full turn.
+          // aiTurnSummaryByPlayerId[ai.id] is written by SET_AI_TURN_SUMMARY at this AI's END_TURN
+          // and reset on INITIALIZE_GAME, so it is a reliable per-player "has taken a turn" marker.
+          const hasTakenTurn = !!(state.aiTurnSummaryByPlayerId || {})[ai.id];
+          const vanguardTargets = hasTakenTurn ? getVanguardTargets(state) : [];
+          if (vanguardTargets.length > 0) {
+            // Prefer an unclaimed territory; otherwise clash for an owned one only when clearly stronger
+            // (tactical: Army+Defense on both sides, defender gets +1)
+            const myPower = (ai.armyStrength ?? 0) + (ai.defenseStrength ?? 0);
+            const unclaimed = vanguardTargets.filter((t) => !t.ownerId);
+            const winnable = vanguardTargets.filter((t) => {
+              const owner = pList.find((p) => p.id === t.ownerId);
+              return owner && myPower >= (owner.armyStrength ?? 0) + (owner.defenseStrength ?? 0) + 4;
             });
-            if (unownedNewTerritories.length > 0) {
-              const targetSpace = unownedNewTerritories[randomInt(unownedNewTerritories.length)];
-              console.log('[AI FSM] EVALUATE_BOARD — Vanguard Jump: paying 100G, warping to new territory', targetSpace);
-              turnSummaryRef.current.push('Vanguard jump to new territory (100G)');
-              dispatch({ type: 'SET_PLAYER_STATS', payload: { playerId: ai.id, gold: Math.max(0, ai.gold - 100) } });
-              dispatch({ type: 'MOVE_PLAYER_TO_POSITION', payload: { playerId: ai.id, position: targetSpace } });
-              dispatch({ type: 'SELECT_TERRITORY', payload: targetSpace });
-              setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(DELAY_MS));
+            const pick = unclaimed.length
+              ? unclaimed[randomInt(unclaimed.length)]
+              : winnable.length ? winnable[randomInt(winnable.length)] : null;
+            if (pick) {
+              aiLog('[AI FSM] EVALUATE_BOARD — Vanguard Jump to', pick.name, pick.ownerId ? '(clash)' : '');
+              turnSummaryRef.current.push(`Vanguard Jump to ${pick.name} (100G)`);
+              g.vanguardJump?.(pick.spaceIndex);
+              setTimeout(() => runStep(pick.ownerId ? AI_STATES.COMBAT_PHASE : AI_STATES.SPACE_RESOLUTION), d(DELAY_MS));
               return;
             }
           }
@@ -164,7 +193,15 @@ export function useAITurn() {
             return;
           }
           const isDoublesSecondRoll = state.doublesExtraRollAvailable && !state.doublesBonusUsed;
-          console.log('[AI FSM] MOVEMENT_DECISION', isDoublesSecondRoll ? '(doubles second roll)' : '');
+          aiLog('[AI FSM] MOVEMENT_DECISION', isDoublesSecondRoll ? '(doubles second roll)' : '');
+
+          // a9 "train instead of marching": no roll and no attack (attacking moves the token) this turn
+          if (!isDoublesSecondRoll && (state.cannotMoveNextTurn || {})[ai.id]) {
+            aiLog('[AI FSM] MOVEMENT_DECISION — training: cannot move this turn');
+            turnSummaryRef.current.push('Trained (could not move)');
+            setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(DELAY_MS));
+            return;
+          }
 
           if (isDoublesSecondRoll) {
             dispatch({ type: 'USE_DOUBLES_BONUS' });
@@ -193,7 +230,7 @@ export function useAITurn() {
             // More likely to attack when we have higher army than their defense — AI tries to win
             const attackThreshold = weStronger ? 0.35 : 0.6;
             if (winChance >= attackThreshold) {
-              console.log('[AI FSM] MOVEMENT_DECISION — aggression: attacking nearby player', bestDefender.id);
+              aiLog('[AI FSM] MOVEMENT_DECISION — aggression: attacking nearby player', bestDefender.id);
               turnSummaryRef.current.push(`Attacked ${bestDefender.name}`);
               g.attackNearbyPlayer?.(bestDefender.id);
               setTimeout(() => runStep(AI_STATES.COMBAT_PHASE), d(DELAY_MS));
@@ -201,7 +238,7 @@ export function useAITurn() {
             }
           }
 
-          console.log('[AI FSM] MOVEMENT_DECISION — standard move: rolling dice');
+          aiLog('[AI FSM] MOVEMENT_DECISION — standard move: rolling dice');
           moveTriggeredRef.current = false;
           g.rollDice?.();
           fsmStateRef.current = AI_STATES.WAITING_FOR_MOVE;
@@ -265,7 +302,7 @@ export function useAITurn() {
               return;
             }
 
-            if (ir || dr !== null) {
+            if (ir || dr !== null || st.movingPlayerId != null) {
               setTimeout(pollMove, 400);
               return;
             }
@@ -276,7 +313,7 @@ export function useAITurn() {
             }
             const rollSum = lastRollSumRef.current;
             if (rollSum != null) turnSummaryRef.current.push(`Rolled ${rollSum} and moved`);
-            console.log('[AI FSM] WAITING_FOR_MOVE — move complete');
+            aiLog('[AI FSM] WAITING_FOR_MOVE — move complete');
             // Post-move settle so board paints final position before cards/modals appear
             const settleMs = d(POST_MOVE_SETTLE_MS);
             if (st.combatActive) {
@@ -302,7 +339,7 @@ export function useAITurn() {
           if (!cd.diceRolled) {
             if (!combatBribePlannedRef.current) {
               combatBribePlannedRef.current = true;
-              console.log('[AI FSM] COMBAT_PHASE — bribe window before rolling dice');
+              aiLog('[AI FSM] COMBAT_PHASE — bribe window before rolling dice');
               const scheduleBribesAndRoll = () => {
                 if (myGen !== fsmGenerationRef.current) return;
                 const s2 = gameRef.current;
@@ -314,14 +351,7 @@ export function useAITurn() {
                   if (!aiPlayer?.isAI) {
                     // Human's turn: don't interfere with their manual roll/bribes
                   } else {
-                    const alliances = s2.alliances || {};
-                    const getEffectiveArmy = (pid) => {
-                      const a = alliances[pid];
-                      if (!a?.allyId) return s2.players.find(p => p.id === pid)?.armyStrength ?? 0;
-                      const pl = s2.players.find(x => x.id === pid);
-                      const ally = s2.players.find(x => x.id === a.allyId);
-                      return Math.max(pl?.armyStrength ?? 0, ally?.armyStrength ?? 0);
-                    };
+                    const getEffectiveArmy = (pid) => s2.players.find(p => p.id === pid)?.armyStrength ?? 0;
                     const attacker = s2.players.find(p => p.id === cd2.attackerId);
                     const defender = s2.players.find(p => p.id === cd2.defenderId);
                     if (attacker && defender) {
@@ -367,7 +397,7 @@ export function useAITurn() {
                   console.error('[AI FSM] COMBAT_PHASE — bribe planning failed', err);
                 }
 
-                console.log('[AI FSM] COMBAT_PHASE — rolling combat dice');
+                aiLog('[AI FSM] COMBAT_PHASE — rolling combat dice');
                 g.rollCombatDice?.();
                 setTimeout(() => runStep(AI_STATES.COMBAT_PHASE), d(COMBAT_ROLL_MS));
               };
@@ -382,17 +412,17 @@ export function useAITurn() {
             return;
           }
 
-          console.log('[AI FSM] COMBAT_PHASE — resolving combat');
+          // Dice were rolled and the fight resolved in one step; leave the result on screen, then close it
+          aiLog('[AI FSM] COMBAT_PHASE — combat resolved, showing result');
           combatBribePlannedRef.current = false;
-          g.resolveCombat?.();
+          const aiId = st.players[st.currentPlayerIndex]?.id;
+          if (cd.winner === aiId) turnSummaryRef.current.push('Won combat');
+          else if (cd.loser === aiId) turnSummaryRef.current.push('Lost combat');
           setTimeout(() => {
-            const next = gameRef.current;
-            const aiId = next.players[next.currentPlayerIndex]?.id;
-            if (next.combatData?.winner === aiId) turnSummaryRef.current.push('Won combat');
-            else if (next.combatData?.loser === aiId) turnSummaryRef.current.push('Lost combat');
-            if (next.combatActive && next.gauntlet) return;
-            runStep(AI_STATES.SPACE_RESOLUTION);
-          }, d(AFTER_ACTION_MS));
+            if (myGen !== fsmGenerationRef.current) return;
+            g.finishCombat?.();
+            setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(AFTER_ACTION_MS));
+          }, d(COMBAT_RESULT_MS));
           return;
         }
 
@@ -413,7 +443,7 @@ export function useAITurn() {
           if (st.incomeNotification && st.incomeNotification.playerId === ai2.id) {
             const amount = st.incomeNotification.amount ?? 0;
             if (amount > 0) turnSummaryRef.current.push(`Passed GO: +${amount}G`);
-            console.log('[AI FSM] SPACE_RESOLUTION — dismissing income/salary popup');
+            aiLog('[AI FSM] SPACE_RESOLUTION — dismissing income/salary popup');
             g.clearIncomeNotification?.();
             setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(800));
             return;
@@ -431,7 +461,7 @@ export function useAITurn() {
           if (ai2.lastDrawnCard) {
             const card = ai2.lastDrawnCard;
             const effect = card?.effect || {};
-            console.log('[AI FSM] SPACE_RESOLUTION — resolving card', card?.id);
+            aiLog('[AI FSM] SPACE_RESOLUTION — resolving card', card?.id);
 
             const cardTypeLabel = card.type.charAt(0).toUpperCase() + card.type.slice(1);
             turnSummaryRef.current.push(`Drew ${cardTypeLabel} card`);
@@ -459,22 +489,31 @@ export function useAITurn() {
               } else if (card.type === 'fate' && ['move_5_collect_100', 'cancel_next_penalty', 'reverse_until_battle_win'].includes(effect.special)) {
                 g.applyFateSpecial?.(card.id, ai2b.id);
               } else if (card.type === 'resource' && effect.special === 'rival_kingdom') {
-                const target = st2.players.find((p) => p.id !== ai2b.id);
-                if (target) g.applyResourceSpecial?.(card.id, ai2b.id, target.id);
-                else g.applyCardEffect?.(ai2b.id, effect, { isPenalty: false });
+                // You both gain 200G and you can't attack them: spend it on whoever you'd least like to fight
+                const target = pickTarget(st2, ai2b, (p) => p.defenseStrength ?? 0);
+                g.applyResourceSpecial?.(card.id, ai2b.id, target?.id ?? null);
               } else if (card.type === 'army' && effect.special === 'challenge_nearby') {
-                const target = st2.players.find((p) => p.id !== ai2b.id);
-                if (target) g.applyArmySpecial?.(card.id, ai2b.id, target.id);
-                else g.applyCardEffect?.(ai2b.id, effect, { isPenalty: false });
+                // Same rule as humans: only commanders 1–N spaces ahead can be challenged; hit the leader
+                const within = effect.withinSpaces ?? 5;
+                const n = st2.boardSpaces?.length || 40;
+                const inRange = (p) => { const dist = (p.position - ai2b.position + n) % n; return dist > 0 && dist <= within; };
+                const target = pickTarget(st2, ai2b, leaderScore, inRange);
+                g.applyArmySpecial?.(card.id, ai2b.id, target?.id ?? null);
               } else if (card.type === 'army' && effect.special === 'bribe_guards') {
-                const target = st2.players.find((p) => p.id !== ai2b.id);
-                if (target) g.applyArmySpecial?.(card.id, ai2b.id, target.id);
-                else g.applyCardEffect?.(ai2b.id, effect, { isPenalty: false });
-              } else if (card.type === 'fate' && (effect.special === 'swap_positions' || effect.special === 'alliance')) {
-                const target = st2.players.find((p) => p.id !== ai2b.id);
-                if (target) g.applyFateSpecial?.(effect.special === 'swap_positions' ? 'f6' : 'f7', ai2b.id, target.id);
-                else g.applyCardEffect?.(ai2b.id, effect, { isPenalty: false });
-              } else if ((card.type === 'fate' || card.type === 'penalty') && card.keepable) {
+                // Opponent loses 2 Defense: weaken the leader
+                const target = pickTarget(st2, ai2b, leaderScore);
+                g.applyArmySpecial?.(card.id, ai2b.id, target?.id ?? null);
+              } else if (card.type === 'fate' && effect.special === 'swap_positions') {
+                // Swap with whoever stands closest before our own START, so we collect salary soon
+                const n = st2.boardSpaces?.length || 40;
+                const myStart = FACTION_TO_START_INDEX[ai2b.faction] ?? 0;
+                const target = pickTarget(st2, ai2b, (p) => -(((myStart - p.position + n) % n) || n));
+                g.applyFateSpecial?.('f6', ai2b.id, target?.id ?? null);
+              } else if (card.type === 'fate' && effect.special === 'alliance') {
+                // Truce with the biggest military threat
+                const target = pickTarget(st2, ai2b, (p) => (p.armyStrength ?? 0) + (p.defenseStrength ?? 0));
+                g.applyFateSpecial?.('f7', ai2b.id, target?.id ?? null);
+              } else if (card.type === 'fate' && card.keepable) {
                 // Prefer to use the card now (80%) rather than keep for later — AI tries to get value immediately
                 const preferUse = randomInt(100) < 80;
                 if (preferUse) {
@@ -500,9 +539,25 @@ export function useAITurn() {
             const def = getOuterTerritoryDef(spaceId);
             const cost = def?.price ?? 250;
             const actualCost = plus100 ? cost + 100 : cost;
+            if (terr?.ownerId && terr.ownerId !== ai2.id) {
+              // Opponent's territory: tribute or fight (no free skip). Attack only when clearly stronger.
+              const owner = st.players.find((p) => p.id === terr.ownerId);
+              const bribe = terr.bribe ?? def?.bribe ?? 100;
+              const canFight = owner && !cannotAttack(st, ai2.id, owner.id);
+              if (canFight && (ai2.armyStrength ?? 0) >= (owner.defenseStrength ?? 0) + 3) {
+                aiLog('[AI FSM] SPACE_RESOLUTION — attacking owned territory', spaceId);
+                turnSummaryRef.current.push(`Attacked ${owner.name}'s ${def?.name ?? 'territory'}`);
+                g.attackTerritory?.(territoryId);
+              } else {
+                turnSummaryRef.current.push(`Paid ${Math.min(bribe, ai2.gold ?? 0)}G tribute to ${owner?.name ?? 'owner'}`);
+                g.payTribute?.(territoryId, bribe);
+              }
+              setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(AFTER_ACTION_MS));
+              return;
+            }
             const canBuy = !(st.cannotBuyTerritories || {})[ai2.id] && (ai2.gold >= actualCost) && !terr;
             if (canBuy && (ai2.gold - actualCost >= 200 || (ai2.ownedTerritories || []).length < 2)) {
-              console.log('[AI FSM] SPACE_RESOLUTION — buying outer territory', spaceId);
+              aiLog('[AI FSM] SPACE_RESOLUTION — buying outer territory', spaceId);
               const spaceLabel = st.boardSpaces?.[spaceId]?.label || def?.name || `Space ${spaceId}`;
               turnSummaryRef.current.push(`Bought ${spaceLabel} (-${actualCost}G)`);
               g.purchaseTerritory?.(territoryId, cost);
@@ -523,12 +578,15 @@ export function useAITurn() {
             // More likely to fight when we have higher army than owner's defense — AI tries to win
             const weStrongerOrClose = ourArmy >= ownerDef - 2;
             const shouldBribe = owner && goldOk && !weStrongerOrClose && ourArmy < ownerDef - 5;
-            if (shouldBribe) {
-              console.log('[AI FSM] SPACE_RESOLUTION — paying start bribe 100G');
+            if (owner && cannotAttack(st, ai2.id, owner.id)) {
+              turnSummaryRef.current.push('Passed START peacefully (truce)');
+              g.payStartBribe?.(0);
+            } else if (shouldBribe) {
+              aiLog('[AI FSM] SPACE_RESOLUTION — paying start bribe 100G');
               turnSummaryRef.current.push('Paid 100G at START');
               g.payStartBribe?.(100);
             } else {
-              console.log('[AI FSM] SPACE_RESOLUTION — choosing to fight at START');
+              aiLog('[AI FSM] SPACE_RESOLUTION — choosing to fight at START');
               turnSummaryRef.current.push('Fought at START');
               g.chooseStartFight?.();
             }
@@ -544,7 +602,7 @@ export function useAITurn() {
           }
 
           if (st.doublesExtraRollAvailable && !st.doublesBonusUsed) {
-            console.log('[AI FSM] SPACE_RESOLUTION — doubles: AI gets second roll');
+            aiLog('[AI FSM] SPACE_RESOLUTION — doubles: AI gets second roll');
             setTimeout(() => runStep(AI_STATES.MOVEMENT_DECISION), d(DELAY_MS));
             return;
           }
@@ -555,19 +613,20 @@ export function useAITurn() {
             return;
           }
 
-          const stillBlocking = st.landedOnStart != null || st.landedOnStartChoice != null || st.selectedTerritory != null || ai2.lastDrawnCard != null || st.pendingIncomeTypeSelection != null;
+          const stillBlocking = st.landedOnStart != null || st.landedOnStartChoice != null || st.selectedTerritory != null || ai2.lastDrawnCard != null || st.pendingIncomeTypeSelection != null
+            || st.movingPlayerId != null || st.cardSaleOffer != null;
           if (stillBlocking) {
             setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(300));
             return;
           }
 
-          console.log('[AI FSM] SPACE_RESOLUTION — done, moving to ECONOMY_PHASE');
+          aiLog('[AI FSM] SPACE_RESOLUTION — done, moving to ECONOMY_PHASE');
           setTimeout(() => runStep(AI_STATES.ECONOMY_PHASE), d(DELAY_MS));
           return;
         }
 
         case AI_STATES.ECONOMY_PHASE: {
-          console.log('[AI FSM] ECONOMY_PHASE');
+          aiLog('[AI FSM] ECONOMY_PHASE');
           const st = gameRef.current;
           const ai3 = st.players[st.currentPlayerIndex];
           if (!ai3?.isAI) {
@@ -588,7 +647,7 @@ export function useAITurn() {
             const canAfford = (ai3.gold ?? 0) >= actual;
             const keepBuffer = (ai3.gold ?? 0) - actual >= 150;
             if (canAfford && (keepBuffer || owned.length >= 1)) {
-              console.log('[AI FSM] ECONOMY_PHASE — unlocking inner territory (gateway)', tid);
+              aiLog('[AI FSM] ECONOMY_PHASE — unlocking inner territory (gateway)', tid);
               turnSummaryRef.current.push(`Unlocked inner territory (-${actual}G)`);
               const incomeType = (ai3.armyStrength ?? 0) >= (ai3.defenseStrength ?? 0) ? 'army' : 'defense';
               g.purchaseTerritoryWithIncomeType?.(tid, cost, incomeType);
@@ -602,11 +661,18 @@ export function useAITurn() {
         }
 
         case AI_STATES.END_TURN: {
-          console.log('[AI FSM] END_TURN');
+          aiLog('[AI FSM] END_TURN');
+          // A late card move (e.g. f8) or a fight may still be running — finish it first
+          if (state.movingPlayerId != null || combatActive || ai.lastDrawnCard) {
+            setTimeout(() => runStep(AI_STATES.SPACE_RESOLUTION), d(400));
+            return;
+          }
           const summary = turnSummaryRef.current.length > 0 ? turnSummaryRef.current.join(' · ') : 'Ended turn';
+          const expectedTurn = state.turnNumber ?? 0;
           dispatch({ type: 'SET_AI_TURN_SUMMARY', payload: { playerId: ai.id, summary } });
           setTimeout(() => {
-            dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary } });
+            if (myGen !== fsmGenerationRef.current) return;
+            dispatch({ type: 'NEXT_TURN', payload: { turnSummary: summary, expectedTurn } });
             runningRef.current = false;
           }, d(BEFORE_END_TURN_MS));
           return;
@@ -624,4 +690,97 @@ export function useAITurn() {
     };
   // Intentionally omit aiSpeedMultiplier: re-running when speed changes would start a second FSM and cause double movement/cards
   }, [game.gamePhase, game.currentPlayerIndex, game.players?.[game.currentPlayerIndex]?.id, game.players?.[game.currentPlayerIndex]?.isAI]);
+
+  const speedDelay = (ms) => {
+    const speed = Math.max(0.25, Math.min(2, Number(aiSpeedMultiplier) || 1));
+    return Math.max(100, Math.round(ms / speed));
+  };
+
+  // Gauntlet: AI participants place bribes, and fights with no human in them are rolled and closed by the AI.
+  // AI targets also make their own sacrifice-or-leave choice after a defeat.
+  const gauntletBribedRef = useRef(null);
+  const gauntletPhase = game.gauntlet?.phase;
+  const gauntletIndex = game.gauntlet?.challengerIndex;
+  const gCombat = game.combatData?.combatSource === 'gauntlet' ? game.combatData : null;
+  useEffect(() => {
+    const g = gameRef.current;
+    if (g.gamePhase !== 'gauntlet' || !g.gauntlet) return undefined;
+    const { gauntlet, players = [] } = g;
+    const target = players.find((p) => p.id === gauntlet.targetId);
+
+    if (gauntlet.phase === 'sacrifice_prompt') {
+      if (!target?.isAI) return undefined;
+      const t = setTimeout(() => {
+        const now = gameRef.current;
+        if (now.gauntlet?.phase !== 'sacrifice_prompt') return;
+        const me = now.players.find((p) => p.id === now.gauntlet.targetId);
+        const outer = (me?.ownedTerritories || []).filter((tid) => !tid.startsWith('inner-'));
+        if (outer.length === 0) { now.gauntletDeclineSacrifice?.(); return; }
+        // Give up the cheapest outer territory and try again
+        const price = (tid) => getOuterTerritoryDef(now.territories?.[tid]?.spaceIndex)?.price ?? 0;
+        const cheapest = [...outer].sort((a, b) => price(a) - price(b))[0];
+        aiLog('[AI Gauntlet] sacrificing', cheapest, 'to retry');
+        now.gauntletSacrifice?.(cheapest);
+      }, speedDelay(2000));
+      return () => clearTimeout(t);
+    }
+
+    const cd = g.combatData;
+    if (gauntlet.phase !== 'clash' || !g.combatActive || cd?.combatSource !== 'gauntlet') return undefined;
+    const attacker = players.find((p) => p.id === cd.attackerId);
+    const defender = players.find((p) => p.id === cd.defenderId);
+    if (!attacker || !defender) return undefined;
+    const humanInvolved = !attacker.isAI || !defender.isAI;
+
+    if (!cd.diceRolled) {
+      const t = setTimeout(() => {
+        const now = gameRef.current;
+        const c = now.combatData;
+        if (!c || c.diceRolled || c.combatSource !== 'gauntlet') return;
+        const key = `${now.turnNumber}-${now.gauntlet?.challengerIndex}-${c.attackerId}-${c.defenderId}`;
+        if (gauntletBribedRef.current !== key) {
+          gauntletBribedRef.current = key;
+          const atk = now.players.find((p) => p.id === c.attackerId);
+          const def = now.players.find((p) => p.id === c.defenderId);
+          // Includes the challenger's rally bonus, so an AI target bribes to cover it
+          const { atkStat, defStat } = getCombatStats(now, c) || { atkStat: 0, defStat: 0 };
+          for (const [me, myStat, oppStat] of [[atk, atkStat, defStat], [def, defStat, atkStat]]) {
+            if (!me?.isAI) continue;
+            // Close the stat gap plus a 1-point edge, at most 3 bribes, never below 100G left over
+            const wanted = Math.min(3, Math.max(0, oppStat - myStat + 1));
+            const affordable = Math.max(0, Math.floor(((me.gold ?? 0) - 100) / 100));
+            for (let i = 0; i < Math.min(wanted, affordable); i++) now.addCombatBribe?.(me.id);
+          }
+        }
+        if (!humanInvolved) setTimeout(() => gameRef.current.rollCombatDice?.(), speedDelay(300));
+      }, speedDelay(1500));
+      return () => clearTimeout(t);
+    }
+
+    if (cd.winner != null && !humanInvolved) {
+      const t = setTimeout(() => gameRef.current.finishCombat?.(), speedDelay(COMBAT_RESULT_MS));
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.gamePhase, gauntletPhase, gauntletIndex, game.combatActive, gCombat?.attackerId, gCombat?.diceRolled, gCombat?.winner]);
+
+  // AI buyers answer card-sale offers: buy when they can comfortably afford it
+  const offer = game.cardSaleOffer;
+  useEffect(() => {
+    if (!offer) return undefined;
+    const buyer = gameRef.current.players.find((p) => p.id === offer.buyerId);
+    if (!buyer?.isAI) return undefined;
+    const t = setTimeout(() => {
+      const now = gameRef.current;
+      if (now.cardSaleOffer !== offer) return;
+      const b = now.players.find((p) => p.id === offer.buyerId);
+      const reserve = offer.card?.type === 'penalty' ? 500 : 300;
+      const accept = !!b && (b.gold ?? 0) - offer.price >= reserve;
+      aiLog('[AI] card offer', accept ? 'accepted' : 'declined', offer);
+      now.respondCardSale?.(accept);
+    }, speedDelay(1200));
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offer]);
 }

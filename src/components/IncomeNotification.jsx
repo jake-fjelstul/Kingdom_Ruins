@@ -3,32 +3,33 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
 
 export default function IncomeNotification() {
-  const { incomeNotification, players, clearIncomeNotification, currentPlayerIndex } = useGame();
+  const { incomeNotification, players, clearIncomeNotification, currentPlayerIndex,
+        landedOnStart, landedOnStartChoice, combatActive } = useGame();
   const [shouldShow, setShouldShow] = useState(false);
   
-  // Check if there's a card modal showing - if so, wait for it to close
   const currentPlayer = players[currentPlayerIndex];
-  const hasCardModal = currentPlayer?.lastDrawnCard !== null;
+  const hasBlockingModal =
+    currentPlayer?.lastDrawnCard != null ||
+    landedOnStart !== null ||
+    landedOnStartChoice !== null ||
+    combatActive;
 
   useEffect(() => {
-    if (incomeNotification && !hasCardModal) {
-      // Show notification after card modal closes
-      const timer = setTimeout(() => {
-        setShouldShow(true);
-      }, hasCardModal ? 100 : 500); // Small delay if card was just closed
+    if (incomeNotification && !hasBlockingModal) {
+      const timer = setTimeout(() => setShouldShow(true), 500);
       return () => clearTimeout(timer);
-    } else if (hasCardModal) {
-      setShouldShow(false); // Hide while card modal is showing
+    } else if (hasBlockingModal) {
+      setShouldShow(false);
     }
-  }, [incomeNotification, hasCardModal]);
+  }, [incomeNotification, hasBlockingModal]);
 
   if (!incomeNotification || !shouldShow) return null;
 
   const player = players.find(p => p.id === incomeNotification.playerId);
   if (!player) return null;
 
-  const statLabel = incomeNotification.statType === 'army' ? 'Army' : 'Defense';
-  const statValue = incomeNotification.statType === 'army' ? player.armyStrength : player.defenseStrength;
+  const { amount = 0, outerCount = 0, army = 0, defense = 0, debt = 0 } = incomeNotification;
+  const statGains = [army > 0 && `+${army} Army`, defense > 0 && `+${defense} Defense`].filter(Boolean).join(', ');
 
   return (
     <AnimatePresence>
@@ -52,10 +53,17 @@ export default function IncomeNotification() {
               {player.name} passed START and collected income!
             </p>
             <div className="text-center">
-              <div className="text-3xl font-bold text-green-600">+${incomeNotification.amount}</div>
+              <div className="text-3xl font-bold text-green-600">+${amount}</div>
+              {statGains && <div className="text-xl font-bold text-emerald-700 mt-1">{statGains}</div>}
               <div className="text-sm text-gray-600 mt-2">
-                Base: $100 + ({statLabel} {statValue}% × {player.ownedTerritories.length} territories)
+                Base $100 + $100 × {outerCount} outer {outerCount === 1 ? 'territory' : 'territories'}
+                {statGains && <> · inner territories: {statGains}</>}
               </div>
+              {debt > 0 && (
+                <div className="text-sm text-red-700 font-semibold mt-2">
+                  {Math.min(debt, amount)}G of this repays your bank debt{debt > amount ? ` (${debt - amount}G still owed)` : ' — debt cleared!'}
+                </div>
+              )}
             </div>
           </div>
 

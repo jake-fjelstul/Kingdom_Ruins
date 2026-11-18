@@ -1,8 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-import ruinedCastleImg from '../assets/ruined_castle.png';
-import restoredCastleImg from '../assets/restored_castle.png';
+import ruinedCastleImg from '../assets/ruined_castle.webp';
+import restoredCastleImg from '../assets/restored_castle.webp';
 
 export default function CentralCastle({ castleState }) {
   const prevState = useRef(castleState);

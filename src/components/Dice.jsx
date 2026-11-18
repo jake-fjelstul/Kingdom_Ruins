@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useGame, canEnterBlueRuinZone } from '../context/GameContext';
+import { useGame, canEnterBlueRuinZone, isAttackOfferPending, canStillRoll, getVanguardTargets, VANGUARD_JUMP_COST } from '../context/GameContext';
 
 export default function Dice() {
   const game = useGame();
-  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, finishGameForTesting, requestEnterBlueRuin, combatActive, cardDecks = {}, boardSpaces = [], attackedPlayers = {}, attackImmunity = {}, hasAttackablePlayers, territories = {}, testPurchaseInnerTerritory } = game;
+  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, finishGameForTesting, requestEnterBlueRuin, combatActive, cardDecks = {}, territories = {}, testPurchaseInnerTerritory, movingPlayerId, cardSaleOffer, vanguardJump } = game;
   const currentPlayer = players[currentPlayerIndex];
   const cannotMove = !!(currentPlayer && (cannotMoveNextTurn || {})[currentPlayer.id]);
 
@@ -17,7 +17,11 @@ export default function Dice() {
     landedOnStart !== null ||
     landedOnStartChoice !== null ||
     combatActive ||
-    (currentPlayer && hasAttackablePlayers?.(currentPlayer, players, boardSpaces, attackedPlayers, combatActive, attackImmunity));
+    movingPlayerId != null ||
+    cardSaleOffer != null ||
+    isAttackOfferPending(game);
+  const isMoving = movingPlayerId != null;
+  const mayRoll = canStillRoll(game); // attacking (or having rolled) uses up this turn's roll
 
   // Check if current roll is doubles (for display purposes) — defined before cannotRoll so it can be used there
   const isDoubles = diceRoll !== null && Array.isArray(diceRoll) && diceRoll[0] === diceRoll[1];
@@ -29,9 +33,17 @@ export default function Dice() {
     isRolling ||
     cannotMove ||
     hasBlockingAction ||
-    (diceRoll !== null && !canRollAgain);
+    diceRoll !== null ||   // dice already rolled — wait for movement
+    !mayRoll ||            // already rolled or attacked this turn
+    canRollAgain;          // doubles bonus pending — must use the "Roll Again" button
 
-  const canEnter = gamePhase === 'playing' && !combatActive && currentPlayer && canEnterBlueRuinZone(currentPlayer, game);
+  const canEnter = gamePhase === 'playing' && !combatActive && currentPlayer && !currentPlayer.isAI && mayRoll && canEnterBlueRuinZone(currentPlayer, game);
+  // Vanguard Jump: on your own START, pay 100G to warp to an outer territory instead of rolling
+  const vanguardTargets = !currentPlayer?.isAI && !hasBlockingAction && diceRoll === null && !isRolling
+    ? getVanguardTargets(game)
+    : [];
+  const [showVanguard, setShowVanguard] = useState(false);
+  React.useEffect(() => { setShowVanguard(false); }, [currentPlayer?.id, vanguardTargets.length === 0]);
   const [testDie1, setTestDie1] = useState(1);
   const [testDie2, setTestDie2] = useState(1);
   const [testGold, setTestGold] = useState(currentPlayer?.gold || 0);
@@ -109,17 +121,51 @@ export default function Dice() {
           🏰 Enter Blue Ruin Zone (Restoration)
         </motion.button>
       )}
-      {cannotMove ? (
-        <div className="flex flex-col items-center gap-2">
-          <p className="text-amber-300 font-semibold text-center">You cannot move this turn (training).</p>
+      {vanguardTargets.length > 0 && (
+        <div className="flex flex-col items-center gap-2 w-full max-w-sm">
           <motion.button
-            onClick={endTurn}
-            className="px-6 py-3 rounded-lg font-bold text-white shadow-lg bg-green-600 hover:bg-green-700"
+            onClick={() => setShowVanguard((v) => !v)}
+            className="px-5 py-2 rounded-lg font-bold text-white shadow-lg bg-gradient-to-r from-cyan-600 to-sky-700 hover:from-cyan-700 hover:to-sky-800 border-2 border-cyan-300"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
-            End Turn
+            ⚡ Vanguard Jump ({VANGUARD_JUMP_COST}G)
           </motion.button>
+          {showVanguard && (
+            <div className="w-full bg-slate-800/90 border border-cyan-500/60 rounded-lg p-2 flex flex-col gap-1">
+              <p className="text-cyan-100 text-xs text-center mb-1">
+                Warp to a territory instead of rolling. Owned territories start a Tactical Clash (defender +1).
+              </p>
+              {vanguardTargets.map((t) => {
+                const owner = t.ownerId ? players.find((p) => p.id === t.ownerId) : null;
+                return (
+                  <button
+                    key={t.spaceIndex}
+                    onClick={() => { setShowVanguard(false); vanguardJump(t.spaceIndex); }}
+                    className={`w-full px-3 py-1.5 rounded text-sm font-semibold text-white flex justify-between ${owner ? 'bg-red-700 hover:bg-red-800' : 'bg-cyan-700 hover:bg-cyan-800'}`}
+                  >
+                    <span>{t.name}</span>
+                    <span className="opacity-80">{owner ? `⚔️ ${owner.icon} ${owner.name}` : 'Unclaimed'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      {cannotMove ? (
+        <div className="flex flex-col items-center gap-2">
+          <p className="text-amber-300 font-semibold text-center">{currentPlayer?.isAI ? `${currentPlayer.name} cannot move this turn (training).` : 'You cannot move this turn (training).'}</p>
+          {!currentPlayer?.isAI && !hasBlockingAction && (
+            <motion.button
+              onClick={endTurn}
+              className="px-6 py-3 rounded-lg font-bold text-white shadow-lg bg-green-600 hover:bg-green-700"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              End Turn
+            </motion.button>
+          )}
         </div>
       ) : (
         <motion.button
@@ -131,7 +177,7 @@ export default function Dice() {
           whileHover={!cannotRoll ? { scale: 1.05 } : undefined}
           whileTap={!cannotRoll ? { scale: 0.95 } : undefined}
         >
-          {isRolling ? 'Rolling...' : diceRoll !== null ? 'Move Complete' : currentPlayer?.isAI ? "AI's turn" : 'Roll Dice'}
+          {isRolling ? 'Rolling...' : isMoving ? 'Moving...' : currentPlayer?.isAI ? "AI's turn" : !mayRoll ? 'Move Complete' : 'Roll Dice'}
         </motion.button>
       )}
 
@@ -211,7 +257,7 @@ export default function Dice() {
           🎲 Doubles bonus: Complete your action to roll again
         </div>
       )}
-      {!cannotMove && !currentPlayer?.isAI && diceRoll !== null && !isRolling && !hasBlockingAction && !canRollAgain && (
+      {!cannotMove && !currentPlayer?.isAI && !mayRoll && diceRoll === null && !isRolling && !hasBlockingAction && !canRollAgain && (
         <motion.button
           onClick={endTurn}
           className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold"
