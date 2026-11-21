@@ -10,6 +10,7 @@ import {
   getInnerTerritoryCost,
   getVanguardTargets,
   getCombatStats,
+  getHouseOptions,
 } from '../context/GameContext';
 import { useSettings } from '../context/SettingsContext';
 import { roll2d6, randomInt } from '../utils/dice';
@@ -85,6 +86,10 @@ export function useAITurn() {
   const fsmGenerationRef = useRef(0);
   /** Ensure we only schedule one bribe+roll sequence per combat */
   const combatBribePlannedRef = useRef(false);
+  /** One House decision per turn (the reducer also enforces once per turn) */
+  const houseTriedRef = useRef(false);
+  /** Waiting to clear an AI's failed-Gauntlet summary */
+  const outcomeWaitRef = useRef(false);
 
   gameRef.current = game;
 
@@ -103,6 +108,8 @@ export function useAITurn() {
     const myGen = ++fsmGenerationRef.current;
     turnSummaryRef.current = [];
     lastRollSumRef.current = null;
+    houseTriedRef.current = false;
+    outcomeWaitRef.current = false;
     fsmStateRef.current = AI_STATES.EVALUATE_BOARD;
 
     const speed = Math.max(0.25, Math.min(2, Number(aiSpeedMultiplier) || 1));
@@ -144,6 +151,68 @@ export function useAITurn() {
       switch (stateName) {
         case AI_STATES.EVALUATE_BOARD: {
           aiLog('[AI FSM] EVALUATE_BOARD — start of turn', { playerId: ai.id, gold: ai.gold, army: ai.armyStrength, defense: ai.defenseStrength });
+
+          // A failed-Gauntlet summary is on screen: let a human read and dismiss theirs; clear an AI's after a pause
+          if (state.gauntletOutcome) {
+            const outcomeTarget = pList.find((p) => p.id === state.gauntletOutcome.targetId);
+            if (outcomeTarget?.isAI && !outcomeWaitRef.current) {
+              outcomeWaitRef.current = true;
+              setTimeout(() => {
+                outcomeWaitRef.current = false;
+                if (myGen !== fsmGenerationRef.current) return;
+                gameRef.current.clearGauntletOutcome?.();
+                runStep(AI_STATES.EVALUATE_BOARD);
+              }, d(COMBAT_RESULT_MS));
+            } else if (!outcomeTarget?.isAI) {
+              setTimeout(() => runStep(AI_STATES.EVALUATE_BOARD), d(500));
+            }
+            return;
+          }
+
+          // Play kept cards first (one at a time, so each is visible): Fate cards on ourselves, Penalty cards on the leader
+          const hand = ai.hand || [];
+          const fateIdx = hand.findIndex((c) => c.type === 'fate' && c.effect && !c.effect.special);
+          const penaltyIdx = hand.findIndex((c) => c.type === 'penalty' && c.effect);
+          if (fateIdx >= 0 || penaltyIdx >= 0) {
+            if (fateIdx >= 0) {
+              turnSummaryRef.current.push('Played a kept Fate card');
+              g.useFateCard?.(ai.id, fateIdx);
+            } else {
+              const victim = pickTarget(state, ai, leaderScore);
+              if (victim) {
+                turnSummaryRef.current.push(`Played a Penalty card on ${victim.name}`);
+                g.usePenaltyCard?.(ai.id, victim.id, penaltyIdx);
+              }
+            }
+            setTimeout(() => runStep(AI_STATES.EVALUATE_BOARD), d(AFTER_ACTION_MS));
+            return;
+          }
+
+          // Challenge the House now and then: small bets when comfortably rich, a heist when the vault is fat
+          const house = getHouseOptions(state);
+          if ((house.stakes.length || house.heist) && !houseTriedRef.current) {
+            houseTriedRef.current = true;
+            const vault = state.houseVault ?? 0;
+            const gold = ai.gold ?? 0;
+            let stake = null;
+            if (house.heist && vault >= 1200 && gold >= 1200 && randomInt(100) < 25) stake = 'heist';
+            else if (gold >= 900 && randomInt(100) < 30) {
+              const affordable = house.stakes.filter((s) => gold - s * 2 >= 600);
+              if (affordable.length) stake = affordable[randomInt(affordable.length)];
+            }
+            if (stake != null) {
+              aiLog('[AI FSM] EVALUATE_BOARD — challenging the House', stake);
+              g.challengeHouse?.(stake);
+              setTimeout(() => {
+                if (myGen !== fsmGenerationRef.current) return;
+                const hc = gameRef.current.houseChallenge;
+                if (hc) turnSummaryRef.current.push(`${hc.heist ? 'Vault Heist' : `Bet ${hc.stake}G vs the House`}: ${hc.won ? 'won' : 'lost'} ${Math.abs(hc.goldChange)}G`);
+                gameRef.current.clearHouseChallenge?.();
+                setTimeout(() => runStep(AI_STATES.EVALUATE_BOARD), d(600));
+              }, d(COMBAT_RESULT_MS));
+              return;
+            }
+          }
 
           const combined = (ai.armyStrength ?? 0) + (ai.defenseStrength ?? 0);
           const hasBothInners = (INNER_BY_FACTION[ai.faction] || []).every((id) => (ai.ownedTerritories || []).includes(id));

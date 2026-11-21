@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useGame, canEnterBlueRuinZone, isAttackOfferPending, canStillRoll, getVanguardTargets, VANGUARD_JUMP_COST } from '../context/GameContext';
+import { useGame, canEnterBlueRuinZone, isAttackOfferPending, canStillRoll, getVanguardTargets, VANGUARD_JUMP_COST, getHouseOptions, HOUSE_PAYOUT_MULTIPLIER, HOUSE_LOSS_MULTIPLIER } from '../context/GameContext';
 
 export default function Dice() {
   const game = useGame();
-  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, finishGameForTesting, requestEnterBlueRuin, combatActive, cardDecks = {}, territories = {}, testPurchaseInnerTerritory, movingPlayerId, cardSaleOffer, vanguardJump } = game;
+  const { gamePhase, diceRoll, isRolling, rollDice, setTestDice, setTestPlayerStats, testDrawCard, movePlayer, currentPlayerIndex, players, endTurn, selectedTerritory, selectedCorner, pendingIncomeTypeSelection, landedOnStart, landedOnStartChoice, doublesBonusUsed, doublesExtraRollAvailable, useDoublesBonus, cannotMoveNextTurn, dispatch, testingMode, finishGameForTesting, requestEnterBlueRuin, combatActive, cardDecks = {}, territories = {}, testPurchaseInnerTerritory, movingPlayerId, cardSaleOffer, vanguardJump, houseChallenge, houseVault = 0, challengeHouse } = game;
   const currentPlayer = players[currentPlayerIndex];
   const cannotMove = !!(currentPlayer && (cannotMoveNextTurn || {})[currentPlayer.id]);
 
@@ -19,6 +19,7 @@ export default function Dice() {
     combatActive ||
     movingPlayerId != null ||
     cardSaleOffer != null ||
+    houseChallenge != null ||
     isAttackOfferPending(game);
   const isMoving = movingPlayerId != null;
   const mayRoll = canStillRoll(game); // attacking (or having rolled) uses up this turn's roll
@@ -44,6 +45,11 @@ export default function Dice() {
     : [];
   const [showVanguard, setShowVanguard] = useState(false);
   React.useEffect(() => { setShowVanguard(false); }, [currentPlayer?.id, vanguardTargets.length === 0]);
+  // Challenge the House: once per turn, before rolling
+  const houseOpts = !currentPlayer?.isAI && !hasBlockingAction && !cannotMove ? getHouseOptions(game) : { stakes: [], heist: false };
+  const canChallengeHouse = houseOpts.stakes.length > 0 || houseOpts.heist;
+  const [showHouse, setShowHouse] = useState(false);
+  React.useEffect(() => { setShowHouse(false); }, [currentPlayer?.id, canChallengeHouse]);
   const [testDie1, setTestDie1] = useState(1);
   const [testDie2, setTestDie2] = useState(1);
   const [testGold, setTestGold] = useState(currentPlayer?.gold || 0);
@@ -149,6 +155,45 @@ export default function Dice() {
                   </button>
                 );
               })}
+            </div>
+          )}
+        </div>
+      )}
+      {canChallengeHouse && (
+        <div className="flex flex-col items-center gap-2 w-full max-w-sm">
+          <motion.button
+            onClick={() => setShowHouse((v) => !v)}
+            aria-expanded={showHouse}
+            className="px-5 py-2 rounded-lg font-bold text-white shadow-lg bg-gradient-to-r from-amber-700 to-yellow-700 hover:from-amber-800 hover:to-yellow-800 border-2 border-amber-300"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            🎲 Challenge the House (Vault: {houseVault}G)
+          </motion.button>
+          {showHouse && (
+            <div className="w-full bg-slate-800/90 border border-amber-500/60 rounded-lg p-2 flex flex-col gap-1">
+              <p className="text-amber-100 text-xs text-center mb-1">
+                You and the House each roll 2d6. Higher total wins; the House wins ties (about 44% for you). Once per turn, then you still roll.
+              </p>
+              {houseOpts.stakes.map((stake) => (
+                <button
+                  key={stake}
+                  onClick={() => { setShowHouse(false); challengeHouse(stake); }}
+                  className="w-full px-3 py-1.5 rounded text-sm font-semibold text-white flex justify-between bg-amber-700 hover:bg-amber-800"
+                >
+                  <span>Bet {stake}G</span>
+                  <span className="opacity-90">win +{stake * HOUSE_PAYOUT_MULTIPLIER} · lose −{stake * HOUSE_LOSS_MULTIPLIER}</span>
+                </button>
+              ))}
+              {houseOpts.heist && (
+                <button
+                  onClick={() => { setShowHouse(false); challengeHouse('heist'); }}
+                  className="w-full px-3 py-1.5 rounded text-sm font-semibold text-white flex justify-between gap-2 bg-red-800 hover:bg-red-900"
+                >
+                  <span className="whitespace-nowrap">🗝️ Vault Heist</span>
+                  <span className="opacity-90 text-right">win +{houseVault} · lose ½ gold +1 Army</span>
+                </button>
+              )}
             </div>
           )}
         </div>

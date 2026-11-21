@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import ruinedCastleImg from '../assets/ruined_castle.webp';
 import restoredCastleImg from '../assets/restored_castle.webp';
 
-export default function CentralCastle({ castleState }) {
+export default function CentralCastle({ castleState, houseVault = null }) {
   const prevState = useRef(castleState);
   const [justRepaired, setJustRepaired] = useState(false);
   const [justRuined, setJustRuined] = useState(false);
@@ -103,6 +103,17 @@ export default function CentralCastle({ castleState }) {
           {isRepaired ? 'Primer Castle' : 'Kingdom Ruins'}
         </motion.span>
       </div>
+      {houseVault != null && (
+        <div className="absolute left-0 right-0 flex justify-center" style={{ top: '3%' }}>
+          <span
+            className="rounded-full bg-black/60 border border-amber-400/70 text-amber-200 font-bold px-2 whitespace-nowrap"
+            style={{ fontSize: 'clamp(0.45rem, 1.6vmin, 0.85rem)' }}
+            title="House Vault: challenge the House before rolling to win from it"
+          >
+            🏛️ Vault {houseVault}G
+          </span>
+        </div>
+      )}
     </div>
   );
 }

@@ -42,6 +42,30 @@ const GAUNTLET_ENTRY_FALLBACK_MS = 4000;
  */
 export const GAUNTLET_CHALLENGER_BONUS = { 2: 4, 3: 3, 4: 2 };
 
+// House Vault: the pot in the center castle that players can challenge once per turn before rolling
+export const HOUSE_VAULT_START = 500;
+export const HOUSE_STAKES = [100, 250, 500];
+/** A won bet pays this many times the stake (from the vault); a lost bet costs the same multiple. */
+export const HOUSE_PAYOUT_MULTIPLIER = 2;
+export const HOUSE_LOSS_MULTIPLIER = 2;
+
+/**
+ * Which House challenges the current player can make right now: plain stakes they can cover (a loss
+ * costs 2x the stake) and the vault can pay, plus the all-in Vault Heist.
+ */
+export function getHouseOptions(state) {
+  const cp = state.players[state.currentPlayerIndex];
+  const none = { stakes: [], heist: false };
+  if (!cp || state.gamePhase !== 'playing' || state.houseChallengeUsed || state.houseChallenge) return none;
+  if (!canStillRoll(state) || state.combatActive || state.movingPlayerId != null || state.isRolling || state.diceRoll !== null) return none;
+  const vault = state.houseVault ?? 0;
+  const gold = cp.gold ?? 0;
+  return {
+    stakes: HOUSE_STAKES.filter((st) => gold >= st * HOUSE_LOSS_MULTIPLIER && vault >= st * HOUSE_PAYOUT_MULTIPLIER),
+    heist: vault > 0 && gold >= 100,
+  };
+}
+
 export const INNER_BY_FACTION = {
   king: ['inner-tl-1', 'inner-tl-2'],
   dragon: ['inner-tr-1', 'inner-tr-2'],
@@ -137,8 +161,10 @@ export const initialState = {
   testingMode: false,
   landedOnStart: null, // { moverId, ownerId, spaceIndex } when mover lands on any START – stay or fast travel
   landedOnStartChoice: null, // { moverId, ownerId } when staying on another's START – bribe or fight
-  treasuryGold: 0, // 500g fee for Blue Ruin Zone
-  gauntlet: null, // { targetId, challengerIds, challengerIndex, phase: 'clash'|'sacrifice_prompt' }
+  houseVault: HOUSE_VAULT_START, // the House's pot: Blue Ruin fees, penalty gold and lost bets; paid out on won bets
+  houseChallenge: null, // result of the current House challenge, shown until dismissed
+  gauntlet: null, // { targetId, challengerIds, challengerIndex, phase: 'clash'|'sacrifice_prompt', retryUsed, sacrificed, beatenBy }
+  gauntletOutcome: null, // { targetId, beatenBy, lostTerritory } after a failed Gauntlet, shown until dismissed
   victorId: null, // winner when gamePhase === 'ended'
   castleState: 'ruins', // 'ruins' | 'repaired' – center castle; repaired when pay to enter Blue Ruin, ruins on Gauntlet loss
   aiTurnSummaryByPlayerId: {}, // { [playerId]: string } – last turn summary for AI players (shown in treasury)
@@ -164,6 +190,7 @@ const TURN_RESET_FIELDS = {
   attackedThisTurn: false,
   attackOfferDismissed: false,
   cardSaleOffer: null,
+  houseChallengeUsed: false,
 };
 
 /**
@@ -404,6 +431,7 @@ function kickOutOfGauntlet(state, payload) {
     gauntlet: null,
     gamePhase: 'playing',
     castleState: 'ruins',
+    gauntletOutcome: { targetId: target.id, beatenBy: g.beatenBy ?? null, lostTerritory: toRelock },
   };
   const cpIndex = state.players.findIndex((p) => p.id === target.id);
   if (cpIndex !== state.currentPlayerIndex) return kicked;
@@ -462,7 +490,7 @@ export function isTurnComplete(state) {
   if (!cp) return false;
   if (canStillRoll(state)) return false; // hasn't rolled or attacked yet — e.g. just used a kept card
   if (state.movingPlayerId != null || state.isRolling || state.diceRoll !== null) return false;
-  if (state.combatActive || state.cardSaleOffer) return false;
+  if (state.combatActive || state.cardSaleOffer || state.houseChallenge) return false;
   if (state.selectedTerritory !== null || state.selectedCorner !== null || state.pendingIncomeTypeSelection !== null) return false;
   if (cp.lastDrawnCard != null || state.landedOnStart || state.landedOnStartChoice) return false;
   if (state.doublesExtraRollAvailable && !state.doublesBonusUsed) return false;
@@ -504,8 +532,10 @@ function baseReducer(state, action) {
         testingMode: !!initTesting,
         landedOnStartChoice: null,
         landedOnStart: null,
-        treasuryGold: 0,
+        houseVault: HOUSE_VAULT_START,
+        houseChallenge: null,
         gauntlet: null,
+        gauntletOutcome: null,
         victorId: null,
         castleState: 'ruins',
         aiTurnSummaryByPlayerId: {},
@@ -654,7 +684,7 @@ function baseReducer(state, action) {
       };
 
     case 'MOVE_PLAYER_STEP': {
-      const { playerId: stepPlayerId, forceForward = false } = action.payload;
+      const { playerId: stepPlayerId, forceForward = false, isFinalStep = false } = action.payload;
       const stepPlayer = state.players.find(p => p.id === stepPlayerId);
       if (!stepPlayer) return state;
 
@@ -731,18 +761,6 @@ function baseReducer(state, action) {
             });
             break;
           }
-          // d6: defensive structures – land on opponent's territory, lose 1 Army
-          const defStruct = state.defensiveStructures || {};
-          for (const [, t] of Object.entries(state.territories || {})) {
-            if (t.spaceIndex !== stepNextPosition || t.ownerId === stepPlayerId) continue;
-            if (!defStruct[t.ownerId]) continue;
-            const m = stepUpdatedPlayers.find(p => p.id === stepPlayerId);
-            if (!m) break;
-            stepUpdatedPlayers = stepUpdatedPlayers.map(p =>
-              p.id === stepPlayerId ? { ...p, armyStrength: Math.max(0, p.armyStrength - 1) } : p
-            );
-            break;
-          }
           return {
             ...stepStateWithAttacked,
             players: stepUpdatedPlayers,
@@ -766,8 +784,8 @@ function baseReducer(state, action) {
         });
         break;
       }
-      // d6: defensive structures – land on opponent's territory, lose 1 Army
-      const defStruct = state.defensiveStructures || {};
+      // d6: defensive structures – only *landing* on an opponent's territory costs 1 Army
+      const defStruct = isFinalStep ? (state.defensiveStructures || {}) : {};
       for (const [, t] of Object.entries(state.territories || {})) {
         if (t.spaceIndex !== stepNextPosition || t.ownerId === stepPlayerId) continue;
         if (!defStruct[t.ownerId]) continue;
@@ -886,8 +904,12 @@ function baseReducer(state, action) {
       }
       if (effect?.special) return state; // Handled by APPLY_SPECIAL_*
       const eg = effect.gold || 0;
+      const payer = state.players.find(p => p.id === pid);
+      // Gold lost to a Penalty card goes into the House Vault
+      const toVault = isPenalty && eg < 0 && payer ? Math.min(-eg, Math.max(0, payer.gold)) : 0;
       return {
         ...state,
+        houseVault: (state.houseVault ?? 0) + toVault,
         players: state.players.map(p => {
           if (p.id !== pid) return p;
           return {
@@ -1806,8 +1828,9 @@ function baseReducer(state, action) {
       return {
         ...state,
         players: nextPlayers,
-        treasuryGold: (state.treasuryGold || 0) + BLUE_RUIN_FEE,
-        gauntlet: { targetId: playerId, challengerIds, challengerIndex: 0, phase: 'entry_animation' },
+        houseVault: (state.houseVault ?? 0) + BLUE_RUIN_FEE,
+        gauntletOutcome: null,
+        gauntlet: { targetId: playerId, challengerIds, challengerIndex: 0, phase: 'entry_animation', retryUsed: false, sacrificed: null, beatenBy: null },
         gamePhase: 'gauntlet',
         castleState: 'repaired',
       };
@@ -1850,15 +1873,18 @@ function baseReducer(state, action) {
       const target = state.players.find(p => p.id === g.targetId);
       if (!target) return state;
       const hasOuter = (target.ownedTerritories || []).some((t) => !t.startsWith('inner-'));
-      if (hasOuter) {
+      const beatenBy = state.combatData?.winner && state.combatData.winner !== g.targetId ? state.combatData.winner : (g.beatenBy ?? null);
+      const lost = { ...state, gauntlet: { ...g, beatenBy } };
+      // Only one sacrifice per Gauntlet attempt: a second defeat always ends it
+      if (hasOuter && !g.retryUsed) {
         return {
-          ...state,
+          ...lost,
           combatActive: false,
           combatData: null,
-          gauntlet: { ...g, phase: 'sacrifice_prompt' },
+          gauntlet: { ...lost.gauntlet, phase: 'sacrifice_prompt' },
         };
       }
-      return kickOutOfGauntlet(state, action.payload);
+      return kickOutOfGauntlet(lost, action.payload);
     }
 
     case 'GAUNTLET_SACRIFICE_TERRITORY': {
@@ -1888,9 +1914,57 @@ function baseReducer(state, action) {
         players: nextPlayers,
         territories: nextTerritories,
         boardSpaces: nextBoard,
-        gauntlet: { ...g, challengerIndex: 0, phase: 'clash' },
+        gauntlet: {
+          ...g,
+          challengerIndex: 0,
+          phase: 'clash',
+          retryUsed: true,
+          sacrificed: t.name ?? getOuterTerritoryDef(spaceIndex)?.name ?? territoryId,
+        },
       };
     }
+
+    case 'CLEAR_GAUNTLET_OUTCOME':
+      return { ...state, gauntletOutcome: null };
+
+    case 'CHALLENGE_HOUSE': {
+      // payload: { playerId, stake: number | 'heist', rolls: [player1, player2, house1, house2] }.
+      // Higher total wins; the House wins ties.
+      const { playerId, stake, rolls } = action.payload || {};
+      const cp = state.players[state.currentPlayerIndex];
+      if (!cp || cp.id !== playerId || !Array.isArray(rolls) || rolls.length !== 4) return state;
+      const opts = getHouseOptions(state);
+      const heist = stake === 'heist';
+      if (heist ? !opts.heist : !opts.stakes.includes(stake)) return state;
+      const [p1, p2, h1, h2] = rolls;
+      const won = p1 + p2 > h1 + h2;
+      const vault = state.houseVault ?? 0;
+      let goldChange = 0;
+      let armyChange = 0;
+      if (heist) {
+        if (won) goldChange = vault;
+        else {
+          goldChange = -Math.floor(cp.gold / 2);
+          armyChange = (cp.armyStrength ?? 0) > 0 ? -1 : 0;
+        }
+      } else {
+        goldChange = won
+          ? Math.min(vault, stake * HOUSE_PAYOUT_MULTIPLIER)
+          : -Math.min(cp.gold, stake * HOUSE_LOSS_MULTIPLIER);
+      }
+      return {
+        ...state,
+        houseChallengeUsed: true,
+        houseVault: vault - goldChange,
+        houseChallenge: { playerId, stake, heist, playerDice: [p1, p2], houseDice: [h1, h2], won, goldChange, armyChange },
+        players: state.players.map((p) => (p.id === playerId
+          ? { ...p, gold: p.gold + goldChange, armyStrength: Math.max(0, (p.armyStrength ?? 0) + armyChange) }
+          : p)),
+      };
+    }
+
+    case 'CLEAR_HOUSE_CHALLENGE':
+      return { ...state, houseChallenge: null };
 
     case 'GAUNTLET_DECLINE_SACRIFICE': {
       if (!state.gauntlet) return state;
@@ -1968,6 +2042,12 @@ function getActionTurnSummary(action, before, state) {
       return p?.deckType ? `Mercenary: drew ${p.deckType} card` : 'Mercenary draw';
     case 'USE_DOUBLES_BONUS':
       return 'Used doubles bonus';
+    case 'CHALLENGE_HOUSE': {
+      const hc = state?.houseChallenge;
+      if (!hc) return null;
+      const label = hc.heist ? 'Vault Heist' : `Challenged the House (${hc.stake}G)`;
+      return `${label}: ${hc.won ? 'won' : 'lost'} ${Math.abs(hc.goldChange)}G`;
+    }
     default:
       return null;
   }
@@ -2301,7 +2381,7 @@ export function GameProvider({ children }) {
           return;
         }
 
-        dispatch({ type: 'MOVE_PLAYER_STEP', payload: { playerId, forceForward: !!fromCard } });
+        dispatch({ type: 'MOVE_PLAYER_STEP', payload: { playerId, forceForward: !!fromCard, isFinalStep: stepsRemaining === 1 } });
         stepsRemaining--;
 
         if (stepsRemaining === 0) {
@@ -2783,6 +2863,24 @@ export function GameProvider({ children }) {
     dispatch({ type: 'GAUNTLET_DECLINE_SACRIFICE' });
   }, []);
 
+  const clearGauntletOutcome = useCallback(() => {
+    dispatch({ type: 'CLEAR_GAUNTLET_OUTCOME' });
+  }, []);
+
+  // Challenge the House: dice are rolled here so the reducer stays pure
+  const challengeHouse = useCallback((stake) => {
+    const st = stateRef.current;
+    const cp = st.players[st.currentPlayerIndex];
+    if (!cp) return;
+    const rolls = [rollD6(), rollD6(), rollD6(), rollD6()];
+    dispatch({ type: 'CHALLENGE_HOUSE', payload: { playerId: cp.id, stake, rolls } });
+  }, []);
+
+  const clearHouseChallenge = useCallback(() => {
+    dispatch({ type: 'CLEAR_HOUSE_CHALLENGE' });
+    setTimeout(() => checkAndAdvanceTurn(), 100);
+  }, [checkAndAdvanceTurn]);
+
   const finishGameForTesting = useCallback(() => {
     const st = stateRef.current;
     if (!st?.testingMode) return;
@@ -2843,6 +2941,9 @@ export function GameProvider({ children }) {
     gauntletSacrifice,
     gauntletDeclineSacrifice,
     finishGameForTesting,
+    clearGauntletOutcome,
+    challengeHouse,
+    clearHouseChallenge,
     getAnalyticsRecorder: () => recorderRef.current,
     hasAttackablePlayers,
   };

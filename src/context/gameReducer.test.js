@@ -10,6 +10,8 @@ import {
   getVanguardTargets,
   getTerritorySalePrice,
   getBankDebt,
+  getHouseOptions,
+  HOUSE_VAULT_START,
 } from './GameContext';
 
 /** A fresh 2–4 player game already in the 'playing' phase. */
@@ -229,6 +231,92 @@ describe('gauntlet defeat (either/or)', () => {
     expect(s.gauntlet.phase).toBe('clash');
     expect(s.gauntlet.challengerIndex).toBe(0);
     expect(player(s, 'player-0').ownedTerritories).toEqual(['inner-tl-1', 'inner-tl-2']);
+    expect(s.gauntlet.retryUsed).toBe(true);
+    expect(s.gauntlet.sacrificed).toBe('Moss Ward');
+  });
+
+  it('allows only one retry: a second defeat kicks the target out even with outer territories left', () => {
+    let s = inGauntlet(true);
+    s = setPlayer(s, 'player-0', { ownedTerritories: [...player(s, 'player-0').ownedTerritories, 'territory-12'] });
+    s = { ...s, territories: { ...s.territories, 'territory-12': { ownerId: 'player-0', spaceIndex: 12 } } };
+    s = run(s, { type: 'GAUNTLET_DEFEAT' }, { type: 'GAUNTLET_SACRIFICE_TERRITORY', payload: { territoryId: 'territory-6' } });
+    s = gameReducer(s, { type: 'GAUNTLET_DEFEAT' });
+    expect(s.gauntlet).toBe(null);
+    expect(s.gamePhase).toBe('playing');
+    expect(player(s, 'player-0').ownedTerritories).toContain('territory-12');
+    expect(player(s, 'player-0').ownedTerritories).not.toContain('inner-tl-2');
+  });
+
+  it('records who broke the Gauntlet and what was lost, until dismissed', () => {
+    let s = { ...inGauntlet(false), combatActive: true, combatData: { winner: 'player-1', loser: 'player-0', combatSource: 'gauntlet' } };
+    s = gameReducer(s, { type: 'GAUNTLET_DEFEAT' });
+    expect(s.gauntletOutcome).toEqual({ targetId: 'player-0', beatenBy: 'player-1', lostTerritory: 'inner-tl-2' });
+    expect(isTurnComplete(s)).toBe(false); // new player hasn't acted; outcome is informational
+    s = gameReducer(s, { type: 'CLEAR_GAUNTLET_OUTCOME' });
+    expect(s.gauntletOutcome).toBe(null);
+  });
+});
+
+describe('defensive structures (d6)', () => {
+  it('only costs Army when landing on the territory, not passing through it', () => {
+    let s = newGame(2);
+    s = { ...s, territories: { 'territory-6': { ownerId: 'player-1', spaceIndex: 6 } }, defensiveStructures: { 'player-1': true } };
+    s = setPlayer(s, 'player-0', { position: 5, armyStrength: 3 });
+    const passing = gameReducer(s, { type: 'MOVE_PLAYER_STEP', payload: { playerId: 'player-0', isFinalStep: false } });
+    expect(player(passing, 'player-0').armyStrength).toBe(3);
+    const landing = gameReducer(s, { type: 'MOVE_PLAYER_STEP', payload: { playerId: 'player-0', isFinalStep: true } });
+    expect(player(landing, 'player-0').armyStrength).toBe(2);
+  });
+});
+
+describe('challenge the House', () => {
+  const house = (s, stake, rolls) => gameReducer(s, { type: 'CHALLENGE_HOUSE', payload: { playerId: 'player-0', stake, rolls } });
+
+  it('starts with a funded vault and is offered before rolling only', () => {
+    const s = newGame(2);
+    expect(s.houseVault).toBe(HOUSE_VAULT_START);
+    expect(getHouseOptions(s)).toEqual({ stakes: [100, 250], heist: true }); // King has 700G: can't cover a 500 bet (1000 loss)
+    expect(getHouseOptions(gameReducer(s, { type: 'SET_DICE_RESULT', payload: [1, 2] })).stakes).toEqual([]);
+  });
+
+  it('a won bet pays 2x the stake from the vault', () => {
+    const s = house(newGame(2), 100, [6, 6, 1, 1]);
+    expect(player(s, 'player-0').gold).toBe(900);
+    expect(s.houseVault).toBe(HOUSE_VAULT_START - 200);
+    expect(s.houseChallenge).toMatchObject({ won: true, goldChange: 200 });
+    expect(canStillRoll(s)).toBe(true); // it doesn't replace the roll
+  });
+
+  it('a lost bet (ties go to the House) costs 2x the stake into the vault, once per turn', () => {
+    let s = house(newGame(2), 250, [3, 4, 4, 3]);
+    expect(s.houseChallenge.won).toBe(false);
+    expect(player(s, 'player-0').gold).toBe(200);
+    expect(s.houseVault).toBe(HOUSE_VAULT_START + 500);
+    s = gameReducer(s, { type: 'CLEAR_HOUSE_CHALLENGE' });
+    expect(house(s, 100, [6, 6, 1, 1])).toBe(s);
+    expect(getHouseOptions(s).heist).toBe(false);
+  });
+
+  it('a Vault Heist takes the whole vault, or half your gold and 1 Army', () => {
+    const win = house(newGame(2), 'heist', [6, 5, 2, 2]);
+    expect(player(win, 'player-0').gold).toBe(700 + HOUSE_VAULT_START);
+    expect(win.houseVault).toBe(0);
+    let s = setPlayer(newGame(2), 'player-0', { armyStrength: 2 });
+    s = house(s, 'heist', [1, 1, 6, 6]);
+    expect(player(s, 'player-0').gold).toBe(350);
+    expect(player(s, 'player-0').armyStrength).toBe(1);
+    expect(s.houseVault).toBe(HOUSE_VAULT_START + 350);
+  });
+
+  it('blocks the end of the turn while the result is on screen', () => {
+    const s = house(newGame(2), 100, [6, 6, 1, 1]);
+    expect(isTurnComplete({ ...s, hasRolledThisTurn: true })).toBe(false);
+    expect(isTurnComplete({ ...gameReducer(s, { type: 'CLEAR_HOUSE_CHALLENGE' }), hasRolledThisTurn: true })).toBe(true);
+  });
+
+  it('gold lost to a drawn Penalty card goes into the vault', () => {
+    const s = gameReducer(newGame(2), { type: 'APPLY_CARD_EFFECT', payload: { playerId: 'player-0', effect: { gold: -200 }, isPenalty: true } });
+    expect(s.houseVault).toBe(HOUSE_VAULT_START + 200);
   });
 });
 

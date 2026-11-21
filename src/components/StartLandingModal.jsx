@@ -91,6 +91,11 @@ export default function StartLandingModal() {
                       ? "You've landed on an unclaimed start. Stay or fast travel to another start?"
                       : "You've landed on your start. Stay or fast travel to another start?"}
                   </p>
+                  {isOwnStart && (
+                    <p className="text-cyan-200 text-sm text-center -mt-3 mb-5">
+                      ⚡ Stay here and next turn you can Vanguard Jump (100G) straight to any outer territory.
+                    </p>
+                  )}
                   <div className="flex flex-col gap-3">
                     <button
                       onClick={handleStay}
