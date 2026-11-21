@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useGame } from '../context/GameContext';
 
 export default function CombatModal() {
-  const { combatActive, combatData, players, currentPlayerIndex, finishCombat, addCombatBribe, rollCombatDice } = useGame();
+  const { combatActive, combatData, players, currentPlayerIndex, finishCombat, addCombatBribe, rollCombatDice, gauntlet } = useGame();
   const [showResults, setShowResults] = useState(false);
   const [showAttackAnimation, setShowAttackAnimation] = useState(false);
   const isGauntlet = combatData?.combatSource === 'gauntlet';
@@ -32,7 +32,12 @@ export default function CombatModal() {
 
   // Dice are rolled and resolved in one step; play the clash animation, then show the result
   useEffect(() => {
-    if (!combatActive || !combatData) return undefined;
+    if (!combatActive || !combatData) {
+      // Reset when a fight closes so the next fight never opens on the old result screen
+      setShowResults(false);
+      setShowAttackAnimation(false);
+      return undefined;
+    }
     if (!combatData.diceRolled) {
       setShowResults(false);
       setShowAttackAnimation(false);
@@ -47,6 +52,7 @@ export default function CombatModal() {
   if (!combatActive || !combatData || !attacker || !defender) return null;
 
   const diceRolled = combatData.diceRolled || false;
+  const resultsVisible = showResults && diceRolled;
   
   // Get dice values from combatData (stored as arrays) - only available after dice are rolled
   const attackerDice = combatData.attackerDice || (diceRolled ? [Math.floor((combatData.attackerRoll || 0) / 2), Math.ceil((combatData.attackerRoll || 0) / 2)] : null);
@@ -92,7 +98,32 @@ export default function CombatModal() {
   const winnerPlayer = attackerWins ? attacker : defender;
   const humansInFight = [attacker, defender].filter((p) => p && !p.isAI);
   const bannerMood = humansInFight.length === 1 ? (humansInFight[0].id === winnerPlayer?.id ? 'win' : 'lose') : 'neutral';
-  const bannerTitle = bannerMood === 'win' ? '🎉 VICTORY! 🎉' : bannerMood === 'lose' ? '💀 DEFEAT 💀' : '🏆 VICTORY 🏆';
+  // Gauntlet: one clash is not the whole Gauntlet, so report progress instead of VICTORY / DEFEAT
+  const gTarget = isGauntlet && gauntlet ? players.find((p) => p.id === gauntlet.targetId) : null;
+  const gTotal = gauntlet?.challengerIds?.length ?? 0;
+  const gClashNo = (gauntlet?.challengerIndex ?? 0) + 1;
+  const targetHeld = isGauntlet && combatData.winner != null && combatData.winner === gauntlet?.targetId;
+  const gLastClash = gClashNo >= gTotal;
+  const gTargetOwnsOuter = !!gTarget && (gTarget.ownedTerritories || []).some((t) => !t.startsWith('inner-'));
+  const gCanRetry = gTargetOwnsOuter && !gauntlet?.retryUsed;
+  let bannerTitle = bannerMood === 'win' ? '🎉 VICTORY! 🎉' : bannerMood === 'lose' ? '💀 DEFEAT 💀' : '🏆 VICTORY 🏆';
+  let bannerSub = `${winnerPlayer?.name} Wins!`;
+  let gauntletNote = null;
+  if (isGauntlet && gTarget) {
+    if (targetHeld) {
+      bannerTitle = gLastClash ? '🏰 Gauntlet complete! 🏰' : `🛡️ Clash ${gClashNo} of ${gTotal} won`;
+      bannerSub = `${gTarget.name} holds against ${attacker.name}`;
+      gauntletNote = gLastClash
+        ? `Every challenger has fallen. Click Continue to claim the kingdom.`
+        : `${gTotal - gClashNo} challenger${gTotal - gClashNo === 1 ? '' : 's'} still to come — ${gTarget.name} must win them all.`;
+    } else {
+      bannerTitle = `⚔️ ${gTarget.name} falls in clash ${gClashNo} of ${gTotal}`;
+      bannerSub = `${attacker.name} breaks the Gauntlet`;
+      gauntletNote = gCanRetry
+        ? `${gTarget.name} may give up one outer territory to retry the Gauntlet once.`
+        : `${gTarget.name} is out of the Blue Ruin Zone: back to START, minus an inner territory.`;
+    }
+  }
   const bribePot = combatData.bribePot || 0;
   const goldPayment = combatData.goldPayment ?? 0; // capped at what the loser had
 
@@ -104,7 +135,7 @@ export default function CombatModal() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50"
-          onClick={showResults ? handleClose : undefined}
+          onClick={resultsVisible ? handleClose : undefined}
         >
           <motion.div
             initial={{ scale: 0.8, y: 50 }}
@@ -113,7 +144,7 @@ export default function CombatModal() {
             className="bg-gradient-to-br from-red-900 to-orange-900 rounded-lg shadow-2xl p-4 sm:p-6 lg:p-8 max-w-2xl w-full mx-2 sm:mx-4 border-2 sm:border-4 border-red-600 max-h-[95vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            {!showResults ? (
+            {!resultsVisible ? (
               <>
                 {/* Battle Header with Attack Animation */}
                 <div className="text-center mb-6 relative">
@@ -127,6 +158,28 @@ export default function CombatModal() {
                   </motion.h2>
                   <p className="text-red-200 text-sm sm:text-base lg:text-lg flex flex-col items-center gap-2">
                     <span>{attacker.name} vs {defender.name}{tactical ? ' (Tactical Clash)' : ''}</span>
+                    {isGauntlet && gauntlet && gTotal > 0 && (
+                      <span className="flex items-center gap-2 text-sm" aria-label="Gauntlet progress">
+                        <span className="text-amber-200">Clash {gClashNo} of {gTotal}:</span>
+                        {gauntlet.challengerIds.map((cid, i) => {
+                          const c = players.find((p) => p.id === cid);
+                          const done = i < (gauntlet.challengerIndex ?? 0);
+                          const now = i === (gauntlet.challengerIndex ?? 0);
+                          return (
+                            <span
+                              key={cid}
+                              title={c?.name}
+                              className={`px-2 py-0.5 rounded-full border ${done ? 'bg-green-700/70 border-green-400' : now ? 'bg-red-700/80 border-yellow-300' : 'bg-black/30 border-white/20 opacity-70'}`}
+                            >
+                              {c?.icon} {done ? '✓' : now ? '⚔️' : ''}
+                            </span>
+                          );
+                        })}
+                      </span>
+                    )}
+                    {isGauntlet && gauntlet?.retryUsed && (
+                      <span className="text-xs text-amber-300">Second attempt — {gTarget?.name} gave up {gauntlet.sacrificed}. No more retries.</span>
+                    )}
                     {bribePot > 0 && (
                       <span className="inline-flex items-center gap-2 bg-yellow-900/60 border border-yellow-500/60 rounded-full px-3 py-1 shadow-md">
                         <span className="text-2xl">💰</span>
@@ -494,7 +547,7 @@ export default function CombatModal() {
                         initial={{ scale: 0 }}
                         animate={{ scale: 1 }}
                         transition={{ delay: 0.2, type: 'spring' }}
-                        className="text-5xl font-bold text-white"
+                        className={`${isGauntlet ? 'text-2xl sm:text-3xl' : 'text-5xl'} font-bold text-white`}
                       >
                         {bannerTitle}
                       </motion.h2>
@@ -504,7 +557,7 @@ export default function CombatModal() {
                         transition={{ delay: 0.4 }}
                         className="text-2xl text-white mt-2 font-semibold"
                       >
-                        {winnerPlayer?.name} Wins!
+                        {bannerSub}
                       </motion.p>
                     </motion.div>
                   </motion.div>
@@ -591,10 +644,8 @@ export default function CombatModal() {
                         )}
                       </>
                     )}
-                    {isGauntlet && (
-                      <p className="text-lg text-amber-200 mt-2">
-                        {attackerWins ? 'Challenger wins! Click Continue.' : 'Target holds! Click Continue for next challenger.'}
-                      </p>
+                    {isGauntlet && gauntletNote && (
+                      <p className="text-lg text-amber-200 mt-2">{gauntletNote}</p>
                     )}
                     {!isGauntlet && decisiveVictory && (
                       <motion.p

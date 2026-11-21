@@ -57,12 +57,13 @@ npm run dev
    - **Roll** the dice and move clockwise. Doubles give one extra roll per turn.
    - **Attack** an opponent 1–3 spaces ahead (instead of rolling). Press *Skip Attack* to roll instead.
    - **Vanguard Jump**: standing on your own START, pay 100 Gold to warp to any outer territory you don't own.
+   - Before any of these, you may **Challenge the House** once: bet 100/250/500 Gold (win 2× from the House Vault, lose 2× into it; the House wins ties) or try a **Vault Heist** for the whole vault (lose half your Gold and 1 Army).
 3. **Landing**:
    - **Card spaces**: draw from that deck. Penalties you draw always apply to you; some Fate cards can be kept.
    - **New Territory**: buy it, or pay tribute / attack if an opponent owns it.
    - **START**: stay or fast travel. On an opponent's START, pay a 100 Gold bribe or fight.
 4. **Income**: passing your own START pays 100 Gold, +100 per outer territory, +1% of Army or Defense per inner territory.
-5. **Winning**: own both inner territories, have 10%+ combined Army and Defense and 500 Gold, then enter the Blue Ruin Zone and survive the Gauntlet against every other player.
+5. **Winning**: own both inner territories, have 10%+ combined Army and Defense and 500 Gold, then enter the Blue Ruin Zone and survive the Gauntlet against every other player. Lose a clash and you may give up one outer territory to retry once; otherwise you lose an inner territory and return to START.
 
 The full rulebook is in the game (the **Rules** button on the lore screen).
 

@@ -30,7 +30,7 @@ export default function GauntletSacrificeModal() {
             🛡️ Sacrifice to Stay in the Blue Ruin Zone
           </h2>
           <p className="text-amber-100 text-center mb-6">
-            You lost a clash. Sacrifice an outer territory to stay and retry the Gauntlet, or decline: you'll lose an inner territory, return to your START, and your turn ends.
+            You lost a clash. Give up one outer territory to restart the Gauntlet from the first challenger. This is your only retry: lose again and you're out. Or decline: you lose an inner territory, return to your START, and your turn ends.
           </p>
           <div className="flex flex-col gap-2 mb-6">
             {outer.map((tid) => {

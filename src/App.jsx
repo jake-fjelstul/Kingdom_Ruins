@@ -16,6 +16,8 @@ import StartChoiceModal from './components/StartChoiceModal';
 import StartLandingModal from './components/StartLandingModal';
 import GauntletSacrificeModal from './components/GauntletSacrificeModal';
 import CardSaleOfferModal from './components/CardSaleOfferModal';
+import GauntletOutcomeModal from './components/GauntletOutcomeModal';
+import HouseChallengeModal from './components/HouseChallengeModal';
 import VictoryScreen from './components/VictoryScreen';
 import Timer from './components/Timer';
 import ImagePreloader from './components/ImagePreloader';
@@ -200,6 +202,8 @@ function GameContent({ onRestart, skipLore = false }) {
       <StartChoiceModal />
       <GauntletSacrificeModal />
       <CardSaleOfferModal />
+      <HouseChallengeModal />
+      <GauntletOutcomeModal />
     </div>
   );
 }

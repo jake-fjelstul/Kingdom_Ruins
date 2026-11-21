@@ -59,7 +59,7 @@ const getTerritoryImage = (territoryId) => {
 };
 
 export default function GameBoard() {
-  const { boardSpaces = [], players = [], territories = {}, currentPlayerIndex, selectedCorner, selectCorner, purchaseTerritory, gauntlet, gauntletEntryAnimationComplete, castleState } = useGame();
+  const { boardSpaces = [], players = [], territories = {}, currentPlayerIndex, selectedCorner, selectCorner, purchaseTerritory, gauntlet, gauntletEntryAnimationComplete, castleState, houseVault } = useGame();
   const { imagesLoaded } = useGameBoardImages();
   const currentPlayer = players[currentPlayerIndex];
   const entryAnim = gauntlet?.phase === 'entry_animation';
@@ -153,7 +153,7 @@ export default function GameBoard() {
         className="absolute z-10 flex items-center justify-center"
         style={{ top: '32%', left: '31%', width: '38%', height: '36%' }}
       >
-        <CentralCastle castleState={castleState ?? 'ruins'} />
+        <CentralCastle castleState={castleState ?? 'ruins'} houseVault={houseVault ?? null} />
       </div>
 
       {/* 2. INNER LOOP - GREEN TERRITORIES & PATHS */}

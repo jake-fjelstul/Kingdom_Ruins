@@ -24,14 +24,18 @@ Gold is the fuel of your conquest. Use it for the following actions:
 ● Tribute: If you land on an opponent's outer territory you must pay its tribute (50–200 Gold) or attack it. Win the attack and the territory is yours.
 ● Selling: You may sell a territory on your turn for half its price (outer 100–200 Gold, inner 375 or 625 Gold).
 ● Bribe: Pay 100 Gold during a battle (before the dice are rolled) to add +1 to your total (Max +3 per battle).
-● Rebuild the Castle: Pay 500 Gold to the Treasury once you enter the Blue Ruin Zone.
+● Rebuild the Castle: Pay 500 Gold into the House Vault once you enter the Blue Ruin Zone.
+● Challenge the House: The House Vault in the center castle starts with 500 Gold and grows from rebuild fees, Gold lost to Penalty cards, and lost bets. Once per turn, before you roll, you may challenge the House: you and the House each roll two dice and the higher total wins (the House wins ties).
+  ○ Bet 100, 250 or 500 Gold. Win and you collect twice your bet from the vault; lose and you pay twice your bet into it. You must be able to cover the loss.
+  ○ Vault Heist (all-in): win and you take the entire vault; lose and you pay half your Gold and 1 Army.
+  ○ Challenging the House does not replace your roll.
 ● Debts: If you owe more than you have (tribute, a lost battle), you pay what you have and the rest is forgiven.
 ● Bank Debt: The "bank is coming" penalty puts you 300 Gold in debt. Until it is repaid, all Gold you earn goes to the bank, and landing on a Resource space lets you pay from your treasury (instead of drawing a card).
 
 III. MOVEMENT & NAVIGATION
 Players move clockwise around the outer loop using two dice.
 ● Standard Move: Roll and move. If you land on a Card space, draw from that deck.
-● The Vanguard Jump (Cut-through): If you start your turn on your own START tile, you may spend 100 Gold instead of rolling to "warp" directly to any outer territory spot you don't own.
+● The Vanguard Jump (Cut-through): If you start your turn on your own START tile, you may spend 100 Gold instead of rolling to "warp" directly to any outer territory spot you don't own. Land exactly on your START and choose "Stay" to set one up.
   ○ An unclaimed spot can be bought as usual.
   ○ If that territory is owned by an opponent, an immediate Tactical Clash begins. The defending player gets an added +1 to their total. Win, and the territory is yours.
 ● Territory Access: You can only enter the inner green squares of your quadrant once you have paid the Unlock Gateway fee.
@@ -75,7 +79,7 @@ Once you are in the center, you are the "Target." Every other player gets to ini
 ● The Gauntlet: You must resolve a Tactical Clash against every player. Every player combines their Army and Defense against your Army and Defense points. The realm rallies against a would-be ruler: each challenger adds +4 in a 2-player game, +3 with 3 players, or +2 with 4 players. There is no limit on the amount of bribes you can use (100 Gold for 1 bonus point).
 ● Victory: If you defeat the challengers, the kingdom is restored. YOU WIN! All ties require a reroll.
 ● Defeat: If you lose a clash, your restoration fails — unless you pay for another chance:
-  ○ If you own an outer territory, you may give one up to stay in the center and try the Gauntlet again from the first challenger.
+  ○ If you own an outer territory, you may give one up to stay in the center and try the Gauntlet again from the first challenger. You get only one retry per Gauntlet.
   ○ Otherwise (or if you decline), you are kicked out of the Blue Zone back to your START tile, you lose 1 inner territory (it becomes "Locked" again and must be re-purchased), and your turn ends.`;
 
 export default function LoreScreen({ onContinue }) {
